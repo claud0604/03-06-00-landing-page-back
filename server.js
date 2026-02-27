@@ -1,7 +1,6 @@
 /**
  * APL Landing Demo - Express Server
- * STATUS: INACTIVE - Reserved for future use
- * To activate: set DEMO_ACTIVE=true in .env
+ * Lightweight backend for demo AI diagnosis (Gemini Vision)
  */
 require('dotenv').config();
 
