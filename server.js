@@ -1,6 +1,7 @@
 /**
  * APL Landing Demo - Express Server
- * Lightweight backend for demo AI diagnosis (no MongoDB, no S3)
+ * STATUS: INACTIVE - Reserved for future use
+ * To activate: set DEMO_ACTIVE=true in .env
  */
 require('dotenv').config();
 
