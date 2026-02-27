@@ -1,12 +1,15 @@
 /**
- * Demo Diagnosis API - Gemini Vision for quick personal color analysis
- * Stateless: no MongoDB, no S3 - receive image, call Gemini, return result
+ * Demo Diagnosis API — Gemini (text-only) for personal color analysis
+ * Receives pre-extracted face measurement data (from client-side MediaPipe).
+ * No images are received or stored. Stateless — no MongoDB, no S3.
  */
 const express = require('express');
 const router = express.Router();
+const fs = require('fs');
+const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// Gemini setup
+// ─── Gemini setup ───
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 let genAI = null;
 
@@ -17,7 +20,7 @@ if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE') {
     console.warn('GEMINI_API_KEY not set. Demo diagnosis disabled.');
 }
 
-// Simple in-memory rate limiter
+// ─── Rate limiter ───
 const rateLimitMap = new Map();
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX) || 10;
 const RATE_LIMIT_WINDOW = (parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES) || 60) * 60 * 1000;
@@ -25,80 +28,120 @@ const RATE_LIMIT_WINDOW = (parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES) || 60
 function checkRateLimit(ip) {
     const now = Date.now();
     const record = rateLimitMap.get(ip);
-
     if (!record || now - record.windowStart > RATE_LIMIT_WINDOW) {
         rateLimitMap.set(ip, { windowStart: now, count: 1 });
         return true;
     }
-
-    if (record.count >= RATE_LIMIT_MAX) {
-        return false;
-    }
-
+    if (record.count >= RATE_LIMIT_MAX) return false;
     record.count++;
     return true;
 }
 
-// Clean up rate limit map periodically
 setInterval(() => {
     const now = Date.now();
     for (const [ip, record] of rateLimitMap) {
-        if (now - record.windowStart > RATE_LIMIT_WINDOW) {
-            rateLimitMap.delete(ip);
-        }
+        if (now - record.windowStart > RATE_LIMIT_WINDOW) rateLimitMap.delete(ip);
     }
 }, 10 * 60 * 1000);
 
-/**
- * Demo diagnosis prompt
- */
+// ─── Anonymous stats storage ───
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const STATS_FILE = path.join(DATA_DIR, 'demo-stats.json');
+
+if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function saveAnonymousStats(data) {
+    try {
+        let stats = [];
+        if (fs.existsSync(STATS_FILE)) {
+            stats = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+        }
+        stats.push(data);
+        fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
+    } catch (e) {
+        console.error('Stats save failed:', e.message);
+    }
+}
+
+function timezoneToRegion(tz) {
+    if (!tz) return 'unknown';
+    if (/^Asia\/(Seoul|Tokyo)/.test(tz)) return 'East Asia';
+    if (/^Asia\/(Shanghai|Hong_Kong|Taipei|Chongqing|Macau)/.test(tz)) return 'East Asia';
+    if (/^Asia\/(Bangkok|Ho_Chi_Minh|Jakarta|Singapore|Manila|Kuala_Lumpur)/.test(tz)) return 'Southeast Asia';
+    if (/^Asia\//.test(tz)) return 'Asia';
+    if (/^Europe\//.test(tz)) return 'Europe';
+    if (/^America\//.test(tz)) return 'Americas';
+    if (/^Africa\//.test(tz)) return 'Africa';
+    if (/^(Australia|Pacific)\//.test(tz)) return 'Oceania';
+    return 'Other';
+}
+
+// ─── Diagnosis prompt (text-only, data-based) ───
 const DEMO_DIAGNOSIS_PROMPT = `
-# APL Personal Color Demo Diagnosis
+# APL Personal Color Demo Diagnosis (Data-Based)
 
-You are a professional personal color consultant. Analyze the provided photos and diagnose:
-1. Personal Color (one of 14 season types)
-2. Face Shape (one of 7 types)
-3. Body Type (one of 5 types) - only if a body photo is provided
+You are a professional personal color consultant with expertise backed by 12,000+ real consultation records.
 
-## Personal Color - 14 Season Types
+You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks) and Canvas pixel analysis. No photo is provided — diagnose purely from the measured values.
+
+## Input Data Description
+- skinColor: RGB/HSL averaged from 6 facial points (cheeks, forehead)
+  - HSL hue interpretation: 0-40 or 340-360 = warm undertone, 180-280 = cool undertone
+  - HSL saturation: higher = more vivid/clear skin
+  - HSL lightness: higher = brighter/lighter skin
+- hairColor: RGB/HSL sampled above forehead
+- eyeColor: RGB/HSL from iris center (if available)
+- backgroundColor: RGB from photo corners (for lighting context — adjust readings if background is strongly colored)
+- faceProportions: Ratios normalized to cheekbone width (1.0)
+  - foreheadRatio: forehead width / cheekbone width
+  - jawRatio: jaw width / cheekbone width
+  - heightRatio: face height / cheekbone width
+- contrast.skinHair: Euclidean RGB distance between skin and hair (higher = more contrast)
+- contrast.skinEye: Euclidean RGB distance between skin and eye
+- bodyProportions (if available):
+  - shoulderHipRatio: shoulder width / hip width
+
+## Personal Color — 14 Season Types
 
 ### SPRING (Warm + Bright/Vivid)
-- Spring Light: Peach base, transparent bright skin, light brown eyes
-- Spring Bright: Very bright and vivid skin, clear bright eyes
-- Spring Soft: Muted feel, soft calm brown eyes
-- Spring Clear: Transparent clean skin, vivid clear eyes
+- Spring Light: Peach base, transparent bright skin (L>65, hue<35), light brown eyes
+- Spring Bright: Very bright and vivid skin (S>40), clear bright eyes
+- Spring Soft: Muted feel (S<35), soft calm brown eyes
+- Spring Clear: Transparent clean skin, vivid clear eyes, medium-high contrast
 
 ### SUMMER (Cool + Bright/Soft)
-- Summer Light: Clear clean cool tone skin, soft calm brown eyes
+- Summer Light: Clear clean cool tone skin (hue>300 or hue<15 with low S), soft eyes
 - Summer Bright: Cool and vivid skin, bright clear eyes
-- Summer Mute: Warm-cool balance, deep calm eyes
+- Summer Mute: Warm-cool balance, deep calm eyes, low saturation
 
 ### AUTUMN (Warm + Deep/Muted)
-- Autumn Mute: Subtle yellow undertone, soft muted feel
-- Autumn Deep: Deep rich warm tone, dark brown eyes
+- Autumn Mute: Subtle yellow undertone (hue 25-40), soft muted feel (S<30)
+- Autumn Deep: Deep rich warm tone (L<50), dark brown eyes, high contrast
 - Autumn Strong: Intense warmth, dark strong eyes
 
 ### WINTER (Cool + Vivid/Deep)
-- Winter Clear: Transparent clean cool tone, clear vivid black eyes
-- Winter Strong: Bright cool tone, high contrast, sharp black eyes
-- Winter Cool Deep: Cool deep tone, deep strong eyes
+- Winter Clear: Transparent clean cool tone, clear vivid black eyes, very high contrast
+- Winter Strong: Bright cool tone, high contrast (skinHair>120), sharp black eyes
+- Winter Cool Deep: Cool deep tone (L<45), deep strong eyes
 - Winter Soft: Soft cool tone, subtle brown-gray eyes
 
-## Face Shape - 7 Types
-1. Oval: Balanced forehead-cheekbone-jawline
-2. Round: Overall soft curves, wider proportions
-3. Square: Angular forehead and jawline
-4. Oblong: Vertically elongated
-5. Heart: Wide forehead, pointed chin
-6. Diamond: Widest at cheekbones
-7. Inverted Triangle: Wide forehead, narrow chin
+## Face Shape — 7 Types (use faceProportions)
+1. Oval: heightRatio 1.3-1.5, foreheadRatio ~0.85-0.95, jawRatio ~0.75-0.85
+2. Round: heightRatio <1.3, foreheadRatio ~0.9, jawRatio ~0.85-0.95
+3. Square: heightRatio 1.2-1.4, jawRatio >0.9 (wide jaw)
+4. Oblong: heightRatio >1.5
+5. Heart: foreheadRatio >0.95, jawRatio <0.7
+6. Diamond: foreheadRatio <0.8, jawRatio <0.8 (widest at cheekbones)
+7. Inverted Triangle: foreheadRatio >1.0, jawRatio <0.75
 
-## Body Type - 5 Types
-1. Straight: Wide shoulders, thicker waist, upper body volume
-2. Wave: Narrow shoulders, thin waist, lower body volume
-3. Natural: Prominent bone structure, muscular, angular
-4. Apple: Upper body volume, prominent abdomen
-5. Hourglass: Similar shoulder and hip width, defined waist
+## Body Type — 5 Types (use bodyProportions)
+1. Straight: shoulderHipRatio >1.1
+2. Wave: shoulderHipRatio <0.95
+3. Natural: shoulderHipRatio 0.95-1.1 (balanced, angular)
+4. Apple: shoulderHipRatio >1.0 (upper body dominant)
+5. Hourglass: shoulderHipRatio 0.95-1.05 (balanced)
 
 ## Response Format (JSON)
 
@@ -107,7 +150,7 @@ You are a professional personal color consultant. Analyze the provided photos an
 {
   "personalColor": "Spring Light",
   "seasonGroup": "Spring",
-  "personalColorDetail": "Your skin has a transparent, bright peach base undertone...",
+  "personalColorDetail": "Based on your skin measurements (HSL hue 28, saturation 42%, lightness 68%), your skin has a warm, bright peach undertone...",
   "personalColorCharacteristics": {
     "hue": "Warm",
     "value": "High",
@@ -115,80 +158,85 @@ You are a professional personal color consultant. Analyze the provided photos an
     "contrast": "Low"
   },
   "faceShape": "Oval",
-  "faceShapeDetail": "Balanced forehead, cheekbones, and jawline...",
+  "faceShapeDetail": "Your face proportions show balanced width ratios (forehead 0.88, jaw 0.79) with a height ratio of 1.38...",
   "bodyType": "Wave",
-  "bodyTypeDetail": "Narrow shoulders with defined waist...",
+  "bodyTypeDetail": "Your shoulder-to-hip ratio of 0.91 indicates...",
   "bestColors": ["Peach", "Coral", "Ivory", "Light Beige", "Soft Yellow"],
   "avoidColors": ["Black", "Cool Gray", "Neon", "Dark Brown"],
   "stylingTip": "A brief 1-2 sentence styling recommendation."
 }
 
-If no body photo is provided, set bodyType and bodyTypeDetail to null.
+If no body measurement data is provided, set bodyType and bodyTypeDetail to null.
+Reference the actual measured values in your explanations to show data-backed reasoning.
 `;
 
 /**
  * POST /api/demo/diagnose
- * Receive base64 image(s), call Gemini, return diagnosis
- *
- * Body: {
- *   image: "base64string",
- *   mimeType: "image/jpeg",
- *   bodyImage: "base64string" (optional),
- *   bodyMimeType: "image/jpeg" (optional),
- *   age: 25 (optional)
- * }
+ * Receive extracted face/body measurement data (JSON only, no images)
  */
 router.post('/diagnose', async (req, res) => {
     try {
-        // Rate limit check
         const clientIP = req.ip || req.connection.remoteAddress;
         if (!checkRateLimit(clientIP)) {
-            return res.status(429).json({
-                success: false,
-                message: 'Too many requests. Please try again later.'
-            });
+            return res.status(429).json({ success: false, message: 'Too many requests. Please try again later.' });
         }
 
-        // Check Gemini availability
         if (!genAI) {
-            return res.status(503).json({
-                success: false,
-                message: 'AI service is not configured.'
-            });
+            return res.status(503).json({ success: false, message: 'AI service is not configured.' });
         }
 
-        const { image, mimeType, bodyImage, bodyMimeType, age } = req.body;
+        const { faceAnalysis, bodyAnalysis, age, gender, timezone, lang } = req.body;
 
-        if (!image) {
-            return res.status(400).json({
-                success: false,
-                message: 'Face image is required.'
-            });
+        if (!faceAnalysis || faceAnalysis.error) {
+            return res.status(400).json({ success: false, message: 'Face analysis data is required.' });
         }
 
-        const faceType = mimeType || 'image/jpeg';
-        console.log(`Demo diagnosis from ${clientIP} (face: ${(image.length * 0.75 / 1024).toFixed(0)}KB${bodyImage ? ', body: ' + (bodyImage.length * 0.75 / 1024).toFixed(0) + 'KB' : ''}${age ? ', age: ' + age : ''})`);
+        console.log(`Demo diagnosis from ${clientIP} (data-only, age: ${age || 'N/A'}, gender: ${gender || 'N/A'}, tz: ${timezone || 'N/A'})`);
 
-        // Build prompt
+        // Build text prompt with measurement data
         let prompt = DEMO_DIAGNOSIS_PROMPT;
-        if (age) prompt += `\n\nCustomer age: ${age}`;
-        if (!bodyImage) prompt += '\n\nNo body photo provided. Set bodyType and bodyTypeDetail to null.';
-        prompt += '\n\nAnalyze the photo(s) below and provide the diagnosis. Respond with JSON only.';
 
-        // Build image parts
-        const imageParts = [
-            { inlineData: { data: image, mimeType: faceType } }
-        ];
+        prompt += '\n\n## Client Measurement Data\n';
+        prompt += `Skin Color: RGB(${faceAnalysis.skinColor.rgb.r}, ${faceAnalysis.skinColor.rgb.g}, ${faceAnalysis.skinColor.rgb.b})`;
+        prompt += ` / HSL(${faceAnalysis.skinColor.hsl.h}, ${faceAnalysis.skinColor.hsl.s}%, ${faceAnalysis.skinColor.hsl.l}%)\n`;
+        prompt += `Hair Color: RGB(${faceAnalysis.hairColor.rgb.r}, ${faceAnalysis.hairColor.rgb.g}, ${faceAnalysis.hairColor.rgb.b})`;
+        prompt += ` / HSL(${faceAnalysis.hairColor.hsl.h}, ${faceAnalysis.hairColor.hsl.s}%, ${faceAnalysis.hairColor.hsl.l}%)\n`;
 
-        if (bodyImage) {
-            imageParts.push({
-                inlineData: { data: bodyImage, mimeType: bodyMimeType || 'image/jpeg' }
-            });
+        if (faceAnalysis.eyeColor) {
+            prompt += `Eye Color: RGB(${faceAnalysis.eyeColor.rgb.r}, ${faceAnalysis.eyeColor.rgb.g}, ${faceAnalysis.eyeColor.rgb.b})`;
+            prompt += ` / HSL(${faceAnalysis.eyeColor.hsl.h}, ${faceAnalysis.eyeColor.hsl.s}%, ${faceAnalysis.eyeColor.hsl.l}%)\n`;
         }
 
-        // Call Gemini Vision
+        prompt += `Background: RGB(${faceAnalysis.backgroundColor.rgb.r}, ${faceAnalysis.backgroundColor.rgb.g}, ${faceAnalysis.backgroundColor.rgb.b})\n`;
+
+        prompt += `\nFace Proportions (normalized to cheekbone width = 1.0):\n`;
+        prompt += `- Forehead ratio: ${faceAnalysis.faceProportions.foreheadRatio}\n`;
+        prompt += `- Jaw ratio: ${faceAnalysis.faceProportions.jawRatio}\n`;
+        prompt += `- Height ratio: ${faceAnalysis.faceProportions.heightRatio}\n`;
+
+        if (faceAnalysis.contrast) {
+            prompt += `\nContrast (Euclidean RGB distance):\n`;
+            prompt += `- Skin ↔ Hair: ${faceAnalysis.contrast.skinHair}\n`;
+            if (faceAnalysis.contrast.skinEye != null) {
+                prompt += `- Skin ↔ Eye: ${faceAnalysis.contrast.skinEye}\n`;
+            }
+        }
+
+        if (bodyAnalysis && bodyAnalysis.bodyProportions) {
+            prompt += `\nBody Proportions:\n`;
+            prompt += `- Shoulder/Hip ratio: ${bodyAnalysis.bodyProportions.shoulderHipRatio}\n`;
+        } else {
+            prompt += '\n\nNo body measurement data provided. Set bodyType and bodyTypeDetail to null.\n';
+        }
+
+        if (age) prompt += `\nCustomer age: ${age}`;
+        if (gender) prompt += `\nCustomer gender: ${gender}`;
+
+        prompt += '\n\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
+
+        // Call Gemini — TEXT ONLY (no image)
         const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent([prompt, ...imageParts]);
+        const result = await model.generateContent(prompt);
         const rawResponse = result.response.text();
         console.log(`Gemini response: ${rawResponse.length} chars`);
 
@@ -214,6 +262,23 @@ router.post('/diagnose', async (req, res) => {
         }
 
         console.log(`Demo result: ${diagnosis.personalColor}, ${diagnosis.faceShape}${diagnosis.bodyType ? ', ' + diagnosis.bodyType : ''}`);
+
+        // Save anonymous stats (no personal data, no images)
+        saveAnonymousStats({
+            timestamp: new Date().toISOString(),
+            age: age || null,
+            gender: gender || null,
+            timezone: timezone || null,
+            lang: lang || null,
+            region: timezoneToRegion(timezone),
+            skinHsl: faceAnalysis.skinColor.hsl,
+            result: {
+                personalColor: diagnosis.personalColor,
+                seasonGroup: diagnosis.seasonGroup,
+                faceShape: diagnosis.faceShape,
+                bodyType: diagnosis.bodyType || null
+            }
+        });
 
         res.json({
             success: true,
@@ -244,14 +309,53 @@ router.post('/diagnose', async (req, res) => {
 
 /**
  * GET /api/demo/status
- * Check if demo service is available
  */
 router.get('/status', (req, res) => {
     res.json({
         success: true,
         available: !!genAI,
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.5-flash',
+        mode: 'data-only'
     });
+});
+
+/**
+ * GET /api/demo/stats
+ * Returns aggregated anonymous demo statistics
+ */
+router.get('/stats', (req, res) => {
+    try {
+        if (!fs.existsSync(STATS_FILE)) {
+            return res.json({ success: true, total: 0, stats: [] });
+        }
+        const stats = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+
+        // Aggregate by region and personal color
+        const byRegion = {};
+        const byColor = {};
+        const byFaceShape = {};
+
+        stats.forEach(s => {
+            const r = s.region || 'unknown';
+            byRegion[r] = (byRegion[r] || 0) + 1;
+            if (s.result) {
+                const pc = s.result.personalColor || 'unknown';
+                byColor[pc] = (byColor[pc] || 0) + 1;
+                const fs2 = s.result.faceShape || 'unknown';
+                byFaceShape[fs2] = (byFaceShape[fs2] || 0) + 1;
+            }
+        });
+
+        res.json({
+            success: true,
+            total: stats.length,
+            byRegion,
+            byColor,
+            byFaceShape
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, message: 'Failed to read stats.' });
+    }
 });
 
 module.exports = router;
