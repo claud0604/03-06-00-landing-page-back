@@ -6,7 +6,11 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const connectDB = require('./config/database');
 const demoRouter = require('./routes/demo');
+
+// Connect MongoDB
+connectDB();
 
 const app = express();
 const PORT = process.env.PORT || 3060;
@@ -17,6 +21,7 @@ app.use(cors({
         if (!origin) return callback(null, true);
         if (origin.includes('localhost')) return callback(null, true);
         if (origin.endsWith('.pages.dev')) return callback(null, true);
+        if (origin.endsWith('.apls.kr')) return callback(null, true);
         callback(new Error('Blocked by CORS policy.'));
     },
     methods: ['GET', 'POST', 'OPTIONS'],

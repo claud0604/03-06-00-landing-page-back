@@ -1,13 +1,12 @@
 /**
  * Demo Diagnosis API — Gemini (text-only) for personal color analysis
  * Receives pre-extracted face measurement data (from client-side MediaPipe).
- * No images are received or stored. Stateless — no MongoDB, no S3.
+ * No images are received or stored. Results saved to MongoDB.
  */
 const express = require('express');
 const router = express.Router();
-const fs = require('fs');
-const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const DemoData = require('../models/DemoData');
 
 // ─── Gemini setup ───
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -44,27 +43,7 @@ setInterval(() => {
     }
 }, 10 * 60 * 1000);
 
-// ─── Anonymous stats storage ───
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const STATS_FILE = path.join(DATA_DIR, 'demo-stats.json');
-
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-function saveAnonymousStats(data) {
-    try {
-        let stats = [];
-        if (fs.existsSync(STATS_FILE)) {
-            stats = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-        }
-        stats.push(data);
-        fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
-    } catch (e) {
-        console.error('Stats save failed:', e.message);
-    }
-}
-
+// ─── Helpers ───
 function timezoneToRegion(tz) {
     if (!tz) return 'unknown';
     if (/^Asia\/(Seoul|Tokyo)/.test(tz)) return 'East Asia';
@@ -78,28 +57,52 @@ function timezoneToRegion(tz) {
     return 'Other';
 }
 
+function generateSessionId() {
+    const now = new Date();
+    const ts = now.toISOString().replace(/[-:T.Z]/g, '').slice(0, 17);
+    const rand = Math.random().toString(36).slice(2, 8);
+    return `DEMO-${ts}-${rand}`;
+}
+
+function getLangInstruction(lang) {
+    if (!lang) return 'Respond in English.';
+    const code = lang.toLowerCase().slice(0, 2);
+    switch (code) {
+        case 'ko': return 'Respond entirely in Korean (한국어).';
+        case 'ja': return 'Respond entirely in Japanese (日本語).';
+        case 'zh': return 'Respond entirely in Chinese (中文).';
+        default: return 'Respond in English.';
+    }
+}
+
 // ─── Diagnosis prompt (text-only, data-based) ───
 const DEMO_DIAGNOSIS_PROMPT = `
 # APL Personal Color Demo Diagnosis (Data-Based)
 
 You are a professional personal color consultant with expertise backed by 12,000+ real consultation records.
 
-You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks) and Canvas pixel analysis. No photo is provided — diagnose purely from the measured values.
+You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks), Image Segmenter, and Canvas pixel analysis. No photo is provided — diagnose purely from the measured values.
 
 ## Input Data Description
-- skinColor: RGB/HSL averaged from 6 facial points (cheeks, forehead)
+- skinColor: RGB/HSL averaged from 8 facial points (cheeks, forehead, nose bridge, chin)
   - HSL hue interpretation: 0-40 or 340-360 = warm undertone, 180-280 = cool undertone
   - HSL saturation: higher = more vivid/clear skin
   - HSL lightness: higher = brighter/lighter skin
-- hairColor: RGB/HSL sampled above forehead
+- hairColor: RGB/HSL from hair region (Image Segmentation mask or forehead fallback)
 - eyeColor: RGB/HSL from iris center (if available)
-- backgroundColor: RGB from photo corners (for lighting context — adjust readings if background is strongly colored)
+- eyebrowColor: RGB/HSL averaged from 8 eyebrow landmark points
+- lipColor: RGB/HSL averaged from 4 lip landmark points
+- neckColor: RGB/HSL from 3 points below chin
+- backgroundColor: RGB from background region (top + sides, body-filtered)
 - faceProportions: Ratios normalized to cheekbone width (1.0)
   - foreheadRatio: forehead width / cheekbone width
   - jawRatio: jaw width / cheekbone width
   - heightRatio: face height / cheekbone width
-- contrast.skinHair: Euclidean RGB distance between skin and hair (higher = more contrast)
-- contrast.skinEye: Euclidean RGB distance between skin and eye
+- contrast: Euclidean RGB distance
+  - skinHair: skin ↔ hair contrast
+  - skinEye: skin ↔ eye contrast
+  - skinLip: skin ↔ lip contrast (higher = more vivid lips relative to skin)
+  - skinNeck: skin ↔ neck contrast (should be low; high value suggests lighting inconsistency)
 - bodyProportions (if available):
   - shoulderHipRatio: shoulder width / hip width
 
@@ -191,7 +194,7 @@ router.post('/diagnose', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Face analysis data is required.' });
         }
 
-        console.log(`Demo diagnosis from ${clientIP} (data-only, age: ${age || 'N/A'}, gender: ${gender || 'N/A'}, tz: ${timezone || 'N/A'})`);
+        console.log(`Demo diagnosis from ${clientIP} (data-only, age: ${age || 'N/A'}, gender: ${gender || 'N/A'}, lang: ${lang || 'N/A'})`);
 
         // Build text prompt with measurement data
         let prompt = DEMO_DIAGNOSIS_PROMPT;
@@ -207,6 +210,21 @@ router.post('/diagnose', async (req, res) => {
             prompt += ` / HSL(${faceAnalysis.eyeColor.hsl.h}, ${faceAnalysis.eyeColor.hsl.s}%, ${faceAnalysis.eyeColor.hsl.l}%)\n`;
         }
 
+        if (faceAnalysis.eyebrowColor) {
+            prompt += `Eyebrow Color: RGB(${faceAnalysis.eyebrowColor.rgb.r}, ${faceAnalysis.eyebrowColor.rgb.g}, ${faceAnalysis.eyebrowColor.rgb.b})`;
+            prompt += ` / HSL(${faceAnalysis.eyebrowColor.hsl.h}, ${faceAnalysis.eyebrowColor.hsl.s}%, ${faceAnalysis.eyebrowColor.hsl.l}%)\n`;
+        }
+
+        if (faceAnalysis.lipColor) {
+            prompt += `Lip Color: RGB(${faceAnalysis.lipColor.rgb.r}, ${faceAnalysis.lipColor.rgb.g}, ${faceAnalysis.lipColor.rgb.b})`;
+            prompt += ` / HSL(${faceAnalysis.lipColor.hsl.h}, ${faceAnalysis.lipColor.hsl.s}%, ${faceAnalysis.lipColor.hsl.l}%)\n`;
+        }
+
+        if (faceAnalysis.neckColor) {
+            prompt += `Neck Color: RGB(${faceAnalysis.neckColor.rgb.r}, ${faceAnalysis.neckColor.rgb.g}, ${faceAnalysis.neckColor.rgb.b})`;
+            prompt += ` / HSL(${faceAnalysis.neckColor.hsl.h}, ${faceAnalysis.neckColor.hsl.s}%, ${faceAnalysis.neckColor.hsl.l}%)\n`;
+        }
+
         prompt += `Background: RGB(${faceAnalysis.backgroundColor.rgb.r}, ${faceAnalysis.backgroundColor.rgb.g}, ${faceAnalysis.backgroundColor.rgb.b})\n`;
 
         prompt += `\nFace Proportions (normalized to cheekbone width = 1.0):\n`;
@@ -216,9 +234,15 @@ router.post('/diagnose', async (req, res) => {
 
         if (faceAnalysis.contrast) {
             prompt += `\nContrast (Euclidean RGB distance):\n`;
-            prompt += `- Skin ↔ Hair: ${faceAnalysis.contrast.skinHair}\n`;
+            prompt += `- Skin \u2194 Hair: ${faceAnalysis.contrast.skinHair}\n`;
             if (faceAnalysis.contrast.skinEye != null) {
-                prompt += `- Skin ↔ Eye: ${faceAnalysis.contrast.skinEye}\n`;
+                prompt += `- Skin \u2194 Eye: ${faceAnalysis.contrast.skinEye}\n`;
+            }
+            if (faceAnalysis.contrast.skinLip != null) {
+                prompt += `- Skin \u2194 Lip: ${faceAnalysis.contrast.skinLip}\n`;
+            }
+            if (faceAnalysis.contrast.skinNeck != null) {
+                prompt += `- Skin \u2194 Neck: ${faceAnalysis.contrast.skinNeck}\n`;
             }
         }
 
@@ -232,7 +256,9 @@ router.post('/diagnose', async (req, res) => {
         if (age) prompt += `\nCustomer age: ${age}`;
         if (gender) prompt += `\nCustomer gender: ${gender}`;
 
-        prompt += '\n\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
+        // Language instruction
+        prompt += `\n\n${getLangInstruction(lang)}`;
+        prompt += '\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
 
         // Call Gemini — TEXT ONLY (no image)
         const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -263,23 +289,7 @@ router.post('/diagnose', async (req, res) => {
 
         console.log(`Demo result: ${diagnosis.personalColor}, ${diagnosis.faceShape}${diagnosis.bodyType ? ', ' + diagnosis.bodyType : ''}`);
 
-        // Save anonymous stats (no personal data, no images)
-        saveAnonymousStats({
-            timestamp: new Date().toISOString(),
-            age: age || null,
-            gender: gender || null,
-            timezone: timezone || null,
-            lang: lang || null,
-            region: timezoneToRegion(timezone),
-            skinHsl: faceAnalysis.skinColor.hsl,
-            result: {
-                personalColor: diagnosis.personalColor,
-                seasonGroup: diagnosis.seasonGroup,
-                faceShape: diagnosis.faceShape,
-                bodyType: diagnosis.bodyType || null
-            }
-        });
-
+        // Send response first
         res.json({
             success: true,
             diagnosis: {
@@ -296,6 +306,45 @@ router.post('/diagnose', async (req, res) => {
                 stylingTip: diagnosis.stylingTip
             },
             isDemo: true
+        });
+
+        // Save to MongoDB asynchronously (non-blocking)
+        DemoData.create({
+            sessionId: generateSessionId(),
+            age: age ? parseInt(age) : null,
+            gender: gender || null,
+            timezone: timezone || null,
+            region: timezoneToRegion(timezone),
+            lang: lang || null,
+            colors: {
+                skin: faceAnalysis.skinColor ? { rgb: faceAnalysis.skinColor.rgb, hsl: faceAnalysis.skinColor.hsl } : undefined,
+                hair: faceAnalysis.hairColor ? { rgb: faceAnalysis.hairColor.rgb, hsl: faceAnalysis.hairColor.hsl } : undefined,
+                eyebrow: faceAnalysis.eyebrowColor ? { rgb: faceAnalysis.eyebrowColor.rgb, hsl: faceAnalysis.eyebrowColor.hsl } : undefined,
+                eye: faceAnalysis.eyeColor ? { rgb: faceAnalysis.eyeColor.rgb, hsl: faceAnalysis.eyeColor.hsl } : undefined,
+                lip: faceAnalysis.lipColor ? { rgb: faceAnalysis.lipColor.rgb, hsl: faceAnalysis.lipColor.hsl } : undefined,
+                neck: faceAnalysis.neckColor ? { rgb: faceAnalysis.neckColor.rgb, hsl: faceAnalysis.neckColor.hsl } : undefined,
+                background: faceAnalysis.backgroundColor ? { rgb: faceAnalysis.backgroundColor.rgb } : undefined
+            },
+            faceProportions: faceAnalysis.faceProportions || undefined,
+            bodyProportions: bodyAnalysis ? bodyAnalysis.bodyProportions : undefined,
+            contrast: faceAnalysis.contrast || undefined,
+            diagnosis: {
+                personalColor: diagnosis.personalColor,
+                seasonGroup: diagnosis.seasonGroup,
+                personalColorDetail: diagnosis.personalColorDetail,
+                faceShape: diagnosis.faceShape,
+                faceShapeDetail: diagnosis.faceShapeDetail,
+                bodyType: diagnosis.bodyType || null,
+                bodyTypeDetail: diagnosis.bodyTypeDetail || null,
+                bestColors: diagnosis.bestColors,
+                avoidColors: diagnosis.avoidColors,
+                stylingTip: diagnosis.stylingTip
+            },
+            segmentationUsed: faceAnalysis.segmentationUsed || false
+        }).then(() => {
+            console.log('Demo data saved to MongoDB');
+        }).catch(err => {
+            console.error('MongoDB save failed:', err.message);
         });
 
     } catch (error) {
@@ -321,39 +370,36 @@ router.get('/status', (req, res) => {
 
 /**
  * GET /api/demo/stats
- * Returns aggregated anonymous demo statistics
+ * Returns aggregated demo statistics from MongoDB
  */
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
     try {
-        if (!fs.existsSync(STATS_FILE)) {
-            return res.json({ success: true, total: 0, stats: [] });
-        }
-        const stats = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+        const total = await DemoData.countDocuments();
 
-        // Aggregate by region and personal color
-        const byRegion = {};
-        const byColor = {};
-        const byFaceShape = {};
+        const byColor = await DemoData.aggregate([
+            { $group: { _id: '$diagnosis.personalColor', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]);
 
-        stats.forEach(s => {
-            const r = s.region || 'unknown';
-            byRegion[r] = (byRegion[r] || 0) + 1;
-            if (s.result) {
-                const pc = s.result.personalColor || 'unknown';
-                byColor[pc] = (byColor[pc] || 0) + 1;
-                const fs2 = s.result.faceShape || 'unknown';
-                byFaceShape[fs2] = (byFaceShape[fs2] || 0) + 1;
-            }
-        });
+        const byFaceShape = await DemoData.aggregate([
+            { $group: { _id: '$diagnosis.faceShape', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]);
+
+        const byRegion = await DemoData.aggregate([
+            { $group: { _id: '$region', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+        ]);
 
         res.json({
             success: true,
-            total: stats.length,
-            byRegion,
-            byColor,
-            byFaceShape
+            total,
+            byColor: Object.fromEntries(byColor.map(i => [i._id || 'unknown', i.count])),
+            byFaceShape: Object.fromEntries(byFaceShape.map(i => [i._id || 'unknown', i.count])),
+            byRegion: Object.fromEntries(byRegion.map(i => [i._id || 'unknown', i.count]))
         });
     } catch (e) {
+        console.error('Stats error:', e.message);
         res.status(500).json({ success: false, message: 'Failed to read stats.' });
     }
 });
