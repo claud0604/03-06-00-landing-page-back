@@ -65,7 +65,7 @@ const demoDataSchema = new mongoose.Schema({
     segmentationUsed: Boolean
 }, {
     timestamps: true,
-    collection: '02_demo-data'
+    collection: '00_landing-demo-data'
 });
 
 demoDataSchema.index({ timestamp: -1 });
