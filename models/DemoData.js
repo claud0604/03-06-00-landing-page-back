@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 
 const colorSchema = {
     rgb: { r: Number, g: Number, b: Number },
-    hsl: { h: Number, s: Number, l: Number }
+    hsl: { h: Number, s: Number, l: Number },
+    lab: { l: Number, a: Number, b: Number }
 };
 
 const demoDataSchema = new mongoose.Schema({
@@ -18,11 +19,7 @@ const demoDataSchema = new mongoose.Schema({
 
     // Extracted color data
     colors: {
-        skin: {
-            rgb: { r: Number, g: Number, b: Number },
-            hsl: { h: Number, s: Number, l: Number },
-            lab: { l: Number, a: Number, b: Number }
-        },
+        skin: colorSchema,
         hair: colorSchema,
         eyebrow: colorSchema,
         eye: colorSchema,
