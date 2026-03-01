@@ -18,7 +18,11 @@ const demoDataSchema = new mongoose.Schema({
 
     // Extracted color data
     colors: {
-        skin: colorSchema,
+        skin: {
+            rgb: { r: Number, g: Number, b: Number },
+            hsl: { h: Number, s: Number, l: Number },
+            lab: { l: Number, a: Number, b: Number }
+        },
         hair: colorSchema,
         eyebrow: colorSchema,
         eye: colorSchema,

@@ -84,10 +84,11 @@ You are a professional personal color consultant with expertise backed by 12,000
 You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks), Image Segmenter, and Canvas pixel analysis. No photo is provided — diagnose purely from the measured values.
 
 ## Input Data Description
-- skinColor: RGB/HSL averaged from 8 facial points (cheeks, forehead, nose bridge, chin)
-  - HSL hue interpretation: 0-40 or 340-360 = warm undertone, 180-280 = cool undertone
-  - HSL saturation: higher = more vivid/clear skin
-  - HSL lightness: higher = brighter/lighter skin
+- skinColor: CIELAB (L*, a*, b*) + RGB averaged from 8 facial points (cheeks, forehead, nose bridge, chin)
+  - L* (Lightness): 0=black, 100=white. Higher = brighter skin
+  - a*: negative=green, positive=red. Higher a* = more redness/warmth in skin
+  - b*: negative=blue, positive=yellow. Higher b* = more yellow/warm undertone
+  - Warm undertone: a*>5 and b*>15. Cool undertone: a*<5 and b*<10
 - hairColor: RGB/HSL from hair region (Image Segmentation mask or forehead fallback)
 - eyeColor: RGB/HSL from iris center (if available)
 - eyebrowColor: RGB/HSL averaged from 8 eyebrow landmark points
@@ -150,10 +151,21 @@ You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using 
 
 **IMPORTANT: Respond ONLY with pure JSON. No code blocks, no markdown.**
 
+The "personalColorDetail" field MUST follow this EXACT two-part format:
+
+◼︎ Measurement section — list key measured values (use LAB for skin, HSL for others)
+◼︎ Explanation section — professional analysis in natural language (easy to understand for non-experts, but backed by data)
+
+Example personalColorDetail format (adapt to actual data and language):
+"◼︎ 측정값\n- 피부: LAB(L*72.5, a*8.2, b*18.3)\n- 헤어: HSL(25°, 45%, 30%)\n- 눈: HSL(28°, 35%, 22%)\n- 입술: HSL(350°, 40%, 50%)\n- 대비: 피부↔헤어 145, 피부↔눈 130\n\n◼︎ 설명\n고객님의 피부는 밝고 따뜻한 톤(L*72.5)으로 황색기(b*18.3)와 적색기(a*8.2)가 적절히 조화된 웜 언더톤입니다. 헤어와 눈의 대비가 중간 수준이며..."
+
+Apply the same format structure regardless of language. Use ◼︎ as section markers.
+For the "faceShapeDetail" and "bodyTypeDetail" fields, use plain explanation text only (no measurement section needed).
+
 {
   "personalColor": "Spring Light",
   "seasonGroup": "Spring",
-  "personalColorDetail": "Based on your skin measurements (HSL hue 28, saturation 42%, lightness 68%), your skin has a warm, bright peach undertone...",
+  "personalColorDetail": "◼︎ 측정값\n- 피부: LAB(L*72.5, a*8.2, b*18.3)\n...\n\n◼︎ 설명\n...",
   "personalColorCharacteristics": {
     "hue": "Warm",
     "value": "High",
@@ -200,8 +212,13 @@ router.post('/diagnose', async (req, res) => {
         let prompt = DEMO_DIAGNOSIS_PROMPT;
 
         prompt += '\n\n## Client Measurement Data\n';
-        prompt += `Skin Color: RGB(${faceAnalysis.skinColor.rgb.r}, ${faceAnalysis.skinColor.rgb.g}, ${faceAnalysis.skinColor.rgb.b})`;
-        prompt += ` / HSL(${faceAnalysis.skinColor.hsl.h}, ${faceAnalysis.skinColor.hsl.s}%, ${faceAnalysis.skinColor.hsl.l}%)\n`;
+        if (faceAnalysis.skinColor.lab) {
+            prompt += `Skin Color: LAB(L*${faceAnalysis.skinColor.lab.l}, a*${faceAnalysis.skinColor.lab.a}, b*${faceAnalysis.skinColor.lab.b})`;
+            prompt += ` / RGB(${faceAnalysis.skinColor.rgb.r}, ${faceAnalysis.skinColor.rgb.g}, ${faceAnalysis.skinColor.rgb.b})\n`;
+        } else {
+            prompt += `Skin Color: RGB(${faceAnalysis.skinColor.rgb.r}, ${faceAnalysis.skinColor.rgb.g}, ${faceAnalysis.skinColor.rgb.b})`;
+            prompt += ` / HSL(${faceAnalysis.skinColor.hsl.h}, ${faceAnalysis.skinColor.hsl.s}%, ${faceAnalysis.skinColor.hsl.l}%)\n`;
+        }
         prompt += `Hair Color: RGB(${faceAnalysis.hairColor.rgb.r}, ${faceAnalysis.hairColor.rgb.g}, ${faceAnalysis.hairColor.rgb.b})`;
         prompt += ` / HSL(${faceAnalysis.hairColor.hsl.h}, ${faceAnalysis.hairColor.hsl.s}%, ${faceAnalysis.hairColor.hsl.l}%)\n`;
 
@@ -317,7 +334,7 @@ router.post('/diagnose', async (req, res) => {
             region: timezoneToRegion(timezone),
             lang: lang || null,
             colors: {
-                skin: faceAnalysis.skinColor ? { rgb: faceAnalysis.skinColor.rgb, hsl: faceAnalysis.skinColor.hsl } : undefined,
+                skin: faceAnalysis.skinColor ? { rgb: faceAnalysis.skinColor.rgb, hsl: faceAnalysis.skinColor.hsl, lab: faceAnalysis.skinColor.lab || undefined } : undefined,
                 hair: faceAnalysis.hairColor ? { rgb: faceAnalysis.hairColor.rgb, hsl: faceAnalysis.hairColor.hsl } : undefined,
                 eyebrow: faceAnalysis.eyebrowColor ? { rgb: faceAnalysis.eyebrowColor.rgb, hsl: faceAnalysis.eyebrowColor.hsl } : undefined,
                 eye: faceAnalysis.eyeColor ? { rgb: faceAnalysis.eyeColor.rgb, hsl: faceAnalysis.eyeColor.hsl } : undefined,
