@@ -1,0 +1,114 @@
+{
+  "Spring Light": {
+    "skinLab": { "l": [68, 82], "a": [5, 11], "b": [14, 22] },
+    "hairLab": { "l": [20, 45], "a": [2, 8], "b": [5, 18] },
+    "eyeLab":  { "l": [18, 40], "a": [2, 7], "b": [3, 14] },
+    "contrast": { "skinHair": [80, 200] },
+    "characteristics": { "hue": "Warm", "value": "High", "chroma": "Medium", "contrast": "Low" },
+    "description": "Bright warm skin with peach undertone, light brown hair and eyes"
+  },
+  "Spring Bright": {
+    "skinLab": { "l": [63, 78], "a": [8, 16], "b": [17, 28] },
+    "hairLab": { "l": [15, 40], "a": [2, 9], "b": [4, 16] },
+    "eyeLab":  { "l": [15, 35], "a": [3, 8], "b": [3, 12] },
+    "contrast": { "skinHair": [120, 270] },
+    "characteristics": { "hue": "Warm", "value": "High", "chroma": "High", "contrast": "Middle" },
+    "description": "Very vivid and bright warm tone, clear bright eyes"
+  },
+  "Spring Soft": {
+    "skinLab": { "l": [65, 78], "a": [4, 9], "b": [12, 20] },
+    "hairLab": { "l": [22, 48], "a": [2, 6], "b": [5, 15] },
+    "eyeLab":  { "l": [20, 42], "a": [1, 5], "b": [3, 10] },
+    "contrast": { "skinHair": [60, 160] },
+    "characteristics": { "hue": "Warm", "value": "High", "chroma": "Low", "contrast": "Low" },
+    "description": "Soft muted warm feel, calm brown eyes"
+  },
+  "Spring Clear": {
+    "skinLab": { "l": [64, 77], "a": [6, 13], "b": [15, 25] },
+    "hairLab": { "l": [12, 35], "a": [1, 7], "b": [2, 12] },
+    "eyeLab":  { "l": [12, 30], "a": [2, 7], "b": [2, 10] },
+    "contrast": { "skinHair": [140, 280] },
+    "characteristics": { "hue": "Warm", "value": "High", "chroma": "Medium", "contrast": "High" },
+    "description": "Clean transparent warm skin, vivid clear eyes, high contrast"
+  },
+  "Summer Light": {
+    "skinLab": { "l": [68, 82], "a": [1, 6], "b": [5, 13] },
+    "hairLab": { "l": [20, 45], "a": [0, 4], "b": [2, 10] },
+    "eyeLab":  { "l": [18, 40], "a": [0, 4], "b": [1, 8] },
+    "contrast": { "skinHair": [80, 200] },
+    "characteristics": { "hue": "Cool", "value": "High", "chroma": "Low", "contrast": "Low" },
+    "description": "Clear clean cool tone skin, soft calm eyes"
+  },
+  "Summer Bright": {
+    "skinLab": { "l": [62, 76], "a": [2, 8], "b": [6, 14] },
+    "hairLab": { "l": [12, 35], "a": [0, 5], "b": [0, 8] },
+    "eyeLab":  { "l": [12, 30], "a": [1, 5], "b": [0, 7] },
+    "contrast": { "skinHair": [120, 270] },
+    "characteristics": { "hue": "Cool", "value": "High", "chroma": "Medium", "contrast": "Middle" },
+    "description": "Cool and vivid skin, bright clear eyes"
+  },
+  "Summer Mute": {
+    "skinLab": { "l": [60, 75], "a": [2, 7], "b": [4, 12] },
+    "hairLab": { "l": [18, 40], "a": [0, 4], "b": [1, 8] },
+    "eyeLab":  { "l": [16, 38], "a": [0, 4], "b": [0, 7] },
+    "contrast": { "skinHair": [60, 170] },
+    "characteristics": { "hue": "Cool", "value": "Middle", "chroma": "Low", "contrast": "Low" },
+    "description": "Warm-cool balance, deep calm eyes, low chroma"
+  },
+  "Autumn Mute": {
+    "skinLab": { "l": [55, 72], "a": [4, 9], "b": [14, 22] },
+    "hairLab": { "l": [15, 38], "a": [2, 7], "b": [5, 16] },
+    "eyeLab":  { "l": [14, 35], "a": [1, 6], "b": [3, 12] },
+    "contrast": { "skinHair": [60, 170] },
+    "characteristics": { "hue": "Warm", "value": "Middle", "chroma": "Low", "contrast": "Low" },
+    "description": "Subtle yellow undertone, soft muted feel"
+  },
+  "Autumn Deep": {
+    "skinLab": { "l": [45, 62], "a": [6, 14], "b": [16, 28] },
+    "hairLab": { "l": [8, 22], "a": [1, 6], "b": [1, 10] },
+    "eyeLab":  { "l": [8, 22], "a": [1, 6], "b": [1, 8] },
+    "contrast": { "skinHair": [120, 270] },
+    "characteristics": { "hue": "Warm", "value": "Low", "chroma": "Medium", "contrast": "High" },
+    "description": "Deep rich warm tone, dark brown eyes and hair"
+  },
+  "Autumn Strong": {
+    "skinLab": { "l": [50, 65], "a": [8, 18], "b": [18, 32] },
+    "hairLab": { "l": [8, 25], "a": [1, 7], "b": [1, 12] },
+    "eyeLab":  { "l": [8, 25], "a": [2, 7], "b": [1, 10] },
+    "contrast": { "skinHair": [100, 250] },
+    "characteristics": { "hue": "Warm", "value": "Middle", "chroma": "High", "contrast": "Middle" },
+    "description": "Intense warmth, dark strong eyes"
+  },
+  "Winter Clear": {
+    "skinLab": { "l": [60, 78], "a": [0, 5], "b": [2, 10] },
+    "hairLab": { "l": [5, 18], "a": [0, 3], "b": [-2, 4] },
+    "eyeLab":  { "l": [5, 18], "a": [0, 3], "b": [-2, 4] },
+    "contrast": { "skinHair": [180, 330] },
+    "characteristics": { "hue": "Cool", "value": "High", "chroma": "Medium", "contrast": "High" },
+    "description": "Transparent clean cool tone, vivid black eyes, very high contrast"
+  },
+  "Winter Strong": {
+    "skinLab": { "l": [55, 72], "a": [1, 6], "b": [3, 11] },
+    "hairLab": { "l": [5, 16], "a": [0, 3], "b": [-2, 3] },
+    "eyeLab":  { "l": [5, 16], "a": [0, 3], "b": [-2, 3] },
+    "contrast": { "skinHair": [160, 310] },
+    "characteristics": { "hue": "Cool", "value": "Middle", "chroma": "Medium", "contrast": "High" },
+    "description": "Bright cool tone, high contrast, sharp black eyes"
+  },
+  "Winter Deep": {
+    "skinLab": { "l": [40, 58], "a": [0, 6], "b": [2, 10] },
+    "hairLab": { "l": [5, 15], "a": [0, 3], "b": [-2, 3] },
+    "eyeLab":  { "l": [5, 15], "a": [0, 3], "b": [-2, 3] },
+    "contrast": { "skinHair": [100, 240] },
+    "characteristics": { "hue": "Cool", "value": "Low", "chroma": "Medium", "contrast": "Middle" },
+    "description": "Cool deep tone, deep strong eyes"
+  },
+  "Winter Soft": {
+    "skinLab": { "l": [58, 74], "a": [0, 5], "b": [3, 10] },
+    "hairLab": { "l": [10, 30], "a": [0, 3], "b": [-1, 5] },
+    "eyeLab":  { "l": [12, 32], "a": [0, 3], "b": [0, 5] },
+    "contrast": { "skinHair": [100, 220] },
+    "characteristics": { "hue": "Cool", "value": "Middle", "chroma": "Low", "contrast": "Low" },
+    "description": "Soft cool tone, subtle brown-gray eyes"
+  }
+}

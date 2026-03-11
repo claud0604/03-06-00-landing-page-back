@@ -1,12 +1,18 @@
 /**
- * Demo Diagnosis API — Gemini (text-only) for personal color analysis
+ * Demo Diagnosis API — Hybrid: Internal Classifier + Gemini 3.1 Flash Lite
  * Receives pre-extracted face measurement data (from client-side MediaPipe).
  * No images are received or stored. Results saved to MongoDB.
+ *
+ * Flow:
+ *   1. Internal classifier determines type deterministically (LAB-based rules)
+ *   2. Gemini 3.1 Flash Lite writes professional description text
+ *   3. Combined result returned to client
  */
 const express = require('express');
 const router = express.Router();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const DemoData = require('../models/DemoData');
+const { fullDiagnosis, labUtils } = require('../services/apl-color-classifier');
 
 // ─── Gemini setup ───
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -14,7 +20,7 @@ let genAI = null;
 
 if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE') {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    console.log('Gemini API initialized');
+    console.log('Gemini API initialized (gemini-3.1-flash-lite)');
 } else {
     console.warn('GEMINI_API_KEY not set. Demo diagnosis disabled.');
 }
@@ -68,20 +74,155 @@ function getLangInstruction(lang) {
     if (!lang) return 'Respond in English.';
     const code = lang.toLowerCase().slice(0, 2);
     switch (code) {
-        case 'ko': return 'Respond entirely in Korean (한국어).';
-        case 'ja': return 'Respond entirely in Japanese (日本語).';
-        case 'zh': return 'Respond entirely in Chinese (中文).';
+        case 'ko': return 'Respond entirely in Korean (\ud55c\uad6d\uc5b4).';
+        case 'ja': return 'Respond entirely in Japanese (\u65e5\u672c\u8a9e).';
+        case 'zh': return 'Respond entirely in Chinese (\u4e2d\u6587).';
         default: return 'Respond in English.';
     }
 }
 
-// ─── Diagnosis prompt (text-only, data-based) ───
+function labStr(color) {
+    if (color && color.lab) return `LAB(${color.lab.l}, ${color.lab.a}, ${color.lab.b})`;
+    if (color && color.rgb) return `RGB(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b})`;
+    return 'N/A';
+}
+
+// ─── Hybrid Prompt: Internal type decided, Gemini writes description only ───
+function buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang) {
+    const pc = internalResult.personalColor;
+    const bgCorr = internalResult.backgroundCorrection;
+    const face = internalResult.faceShape;
+    const body = internalResult.bodyType;
+
+    let prompt = `# APL Personal Color Diagnosis — Description Writer
+
+You are a professional personal color consultant. Our internal classification engine has already determined the customer's diagnosis based on LAB color science.
+
+Your job is to write professional, detailed descriptions for the diagnosis results.
+
+## Internal Classification Results (ALREADY DETERMINED — do NOT change these)
+
+- Personal Color Type: ${pc.type}
+- Season Group: ${pc.season}
+- Characteristics: Hue=${pc.characteristics.hue}, Value=${pc.characteristics.value}, Chroma=${pc.characteristics.chroma}, Contrast=${pc.characteristics.contrast}
+- Confidence: ${pc.confidence}
+- Alternate Types: ${pc.alternates.map(a => `${a.type} (${a.confidence})`).join(', ')}
+`;
+
+    if (face) {
+        prompt += `- Face Shape: ${face.type} (confidence: ${face.confidence})\n`;
+    }
+    if (body) {
+        prompt += `- Body Type: ${body.type} (confidence: ${body.confidence})\n`;
+    }
+
+    prompt += `\n## Measurement Data\n`;
+    prompt += `Skin Color: ${labStr(faceAnalysis.skinColor)}\n`;
+    prompt += `Hair Color: ${labStr(faceAnalysis.hairColor)}\n`;
+    if (faceAnalysis.eyeColor) prompt += `Eye Color: ${labStr(faceAnalysis.eyeColor)}\n`;
+    if (faceAnalysis.eyebrowColor) prompt += `Eyebrow Color: ${labStr(faceAnalysis.eyebrowColor)}\n`;
+    if (faceAnalysis.lipColor) prompt += `Lip Color: ${labStr(faceAnalysis.lipColor)}\n`;
+    if (faceAnalysis.neckColor) prompt += `Neck Color: ${labStr(faceAnalysis.neckColor)}\n`;
+
+    if (bgCorr && bgCorr.adjustments) {
+        prompt += `\nBackground Correction Applied: dL=${bgCorr.adjustments.dL}, dA=${bgCorr.adjustments.dA}, dB=${bgCorr.adjustments.dB}\n`;
+        prompt += `Corrected Skin: LAB(${bgCorr.corrected.l}, ${bgCorr.corrected.a}, ${bgCorr.corrected.b})\n`;
+    }
+
+    if (faceAnalysis.contrast) {
+        prompt += `\nContrast: Skin\u2194Hair=${faceAnalysis.contrast.skinHair}`;
+        if (faceAnalysis.contrast.skinEye != null) prompt += `, Skin\u2194Eye=${faceAnalysis.contrast.skinEye}`;
+        if (faceAnalysis.contrast.skinLip != null) prompt += `, Skin\u2194Lip=${faceAnalysis.contrast.skinLip}`;
+        prompt += '\n';
+    }
+
+    if (faceAnalysis.faceProportions) {
+        prompt += `\nFace Proportions: forehead=${faceAnalysis.faceProportions.foreheadRatio}, jaw=${faceAnalysis.faceProportions.jawRatio}, height=${faceAnalysis.faceProportions.heightRatio}\n`;
+    }
+
+    if (bodyAnalysis && bodyAnalysis.bodyProportions) {
+        prompt += `Body: shoulderHip=${bodyAnalysis.bodyProportions.shoulderHipRatio}\n`;
+    }
+
+    if (age) prompt += `\nAge: ${age}`;
+    if (gender) prompt += `\nGender: ${gender}`;
+
+    prompt += `\n\n${getLangInstruction(lang)}
+
+## Your Task
+
+Write professional descriptions for the pre-determined diagnosis. Use the measurement data to back your explanations.
+
+The "personalColorDetail" field MUST follow this EXACT format:
+Section 1: "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
+Section 2: After two line breaks, "\u25fc\ufe0e \uc124\uba85" followed by line break, then professional explanation
+
+IMPORTANT: Respond ONLY with pure JSON. No code blocks, no markdown.
+
+{
+  "personalColorDetail": "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)\\n- \ud53c\ubd80: ...\\n...\\n\\n\u25fc\ufe0e \uc124\uba85\\n...",
+  "faceShapeDetail": "...",
+  "bodyTypeDetail": "..." or null,
+  "bestColors": ["Color1", "Color2", "Color3", "Color4", "Color5"],
+  "avoidColors": ["Color1", "Color2", "Color3", "Color4"],
+  "stylingTip": "A brief 1-2 sentence recommendation."
+}`;
+
+    return prompt;
+}
+
+// ─── Full Prompt: Gemini decides everything (fallback for low confidence) ───
+function buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang) {
+    let prompt = DEMO_DIAGNOSIS_PROMPT;
+
+    prompt += '\n\n## Client Measurement Data (all colors in CIELAB)\n';
+
+    prompt += `Skin Color: ${labStr(faceAnalysis.skinColor)}\n`;
+    prompt += `Hair Color: ${labStr(faceAnalysis.hairColor)}\n`;
+    if (faceAnalysis.eyeColor) prompt += `Eye Color: ${labStr(faceAnalysis.eyeColor)}\n`;
+    if (faceAnalysis.eyebrowColor) prompt += `Eyebrow Color: ${labStr(faceAnalysis.eyebrowColor)}\n`;
+    if (faceAnalysis.lipColor) prompt += `Lip Color: ${labStr(faceAnalysis.lipColor)}\n`;
+    if (faceAnalysis.neckColor) prompt += `Neck Color: ${labStr(faceAnalysis.neckColor)}\n`;
+    if (faceAnalysis.backgroundColor && faceAnalysis.backgroundColor.rgb) {
+        prompt += `Background: RGB(${faceAnalysis.backgroundColor.rgb.r}, ${faceAnalysis.backgroundColor.rgb.g}, ${faceAnalysis.backgroundColor.rgb.b})\n`;
+    }
+
+    prompt += `\nFace Proportions (normalized to cheekbone width = 1.0):\n`;
+    prompt += `- Forehead ratio: ${faceAnalysis.faceProportions.foreheadRatio}\n`;
+    prompt += `- Jaw ratio: ${faceAnalysis.faceProportions.jawRatio}\n`;
+    prompt += `- Height ratio: ${faceAnalysis.faceProportions.heightRatio}\n`;
+
+    if (faceAnalysis.contrast) {
+        prompt += `\nContrast (Euclidean RGB distance):\n`;
+        prompt += `- Skin \u2194 Hair: ${faceAnalysis.contrast.skinHair}\n`;
+        if (faceAnalysis.contrast.skinEye != null) prompt += `- Skin \u2194 Eye: ${faceAnalysis.contrast.skinEye}\n`;
+        if (faceAnalysis.contrast.skinLip != null) prompt += `- Skin \u2194 Lip: ${faceAnalysis.contrast.skinLip}\n`;
+        if (faceAnalysis.contrast.skinNeck != null) prompt += `- Skin \u2194 Neck: ${faceAnalysis.contrast.skinNeck}\n`;
+    }
+
+    if (bodyAnalysis && bodyAnalysis.bodyProportions) {
+        prompt += `\nBody Proportions:\n`;
+        prompt += `- Shoulder/Hip ratio: ${bodyAnalysis.bodyProportions.shoulderHipRatio}\n`;
+    } else {
+        prompt += '\n\nNo body measurement data provided. Set bodyType and bodyTypeDetail to null.\n';
+    }
+
+    if (age) prompt += `\nCustomer age: ${age}`;
+    if (gender) prompt += `\nCustomer gender: ${gender}`;
+
+    prompt += `\n\n${getLangInstruction(lang)}`;
+    prompt += '\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
+
+    return prompt;
+}
+
+// ─── Diagnosis prompt (kept as fallback for low-confidence cases) ───
 const DEMO_DIAGNOSIS_PROMPT = `
 # APL Personal Color Demo Diagnosis (Data-Based)
 
 You are a professional personal color consultant with expertise backed by 12,000+ real consultation records.
 
-You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks), Image Segmenter, and Canvas pixel analysis. No photo is provided — diagnose purely from the measured values.
+You will receive PRECISE MEASUREMENT DATA extracted from a client's photo using Google MediaPipe Face Landmarker (478 landmarks), Image Segmenter, and Canvas pixel analysis. No photo is provided \u2014 diagnose purely from the measured values.
 
 ## Input Data Description
 All colors are provided in CIELAB (L*, a*, b*) color space:
@@ -102,14 +243,14 @@ All colors are provided in CIELAB (L*, a*, b*) color space:
   - jawRatio: jaw width / cheekbone width
   - heightRatio: face height / cheekbone width
 - contrast: Euclidean RGB distance
-  - skinHair: skin ↔ hair contrast
-  - skinEye: skin ↔ eye contrast
-  - skinLip: skin ↔ lip contrast (higher = more vivid lips relative to skin)
-  - skinNeck: skin ↔ neck contrast (should be low; high value suggests lighting inconsistency)
+  - skinHair: skin \u2194 hair contrast
+  - skinEye: skin \u2194 eye contrast
+  - skinLip: skin \u2194 lip contrast (higher = more vivid lips relative to skin)
+  - skinNeck: skin \u2194 neck contrast (should be low; high value suggests lighting inconsistency)
 - bodyProportions (if available):
   - shoulderHipRatio: shoulder width / hip width
 
-## Personal Color — 14 Season Types
+## Personal Color \u2014 14 Season Types
 
 ### SPRING (Warm + Bright/Vivid)
 - Spring Light: Bright warm skin (L*>65, a*>5, b*>15), light brown eyes
@@ -130,10 +271,10 @@ All colors are provided in CIELAB (L*, a*, b*) color space:
 ### WINTER (Cool + Vivid/Deep)
 - Winter Clear: Cool clear tone (a*<5, b*<10), vivid black eyes, very high contrast
 - Winter Strong: Bright cool tone, high contrast (skinHair>120), sharp black eyes
-- Winter Cool Deep: Cool deep tone (L*<50, a*<5), deep strong eyes
+- Winter Deep: Cool deep tone (L*<50, a*<5), deep strong eyes
 - Winter Soft: Soft cool tone (low a*, low b*), subtle brown-gray eyes
 
-## Face Shape — 7 Types (use faceProportions)
+## Face Shape \u2014 7 Types (use faceProportions)
 1. Oval: heightRatio 1.3-1.5, foreheadRatio ~0.85-0.95, jawRatio ~0.75-0.85
 2. Round: heightRatio <1.3, foreheadRatio ~0.9, jawRatio ~0.85-0.95
 3. Square: heightRatio 1.2-1.4, jawRatio >0.9 (wide jaw)
@@ -142,7 +283,7 @@ All colors are provided in CIELAB (L*, a*, b*) color space:
 6. Diamond: foreheadRatio <0.8, jawRatio <0.8 (widest at cheekbones)
 7. Inverted Triangle: foreheadRatio >1.0, jawRatio <0.75
 
-## Body Type — 5 Types (use bodyProportions)
+## Body Type \u2014 5 Types (use bodyProportions)
 1. Straight: shoulderHipRatio >1.1
 2. Wave: shoulderHipRatio <0.95
 3. Natural: shoulderHipRatio 0.95-1.1 (balanced, angular)
@@ -155,23 +296,20 @@ All colors are provided in CIELAB (L*, a*, b*) color space:
 
 The "personalColorDetail" field MUST follow this EXACT two-part format with proper line breaks:
 
-Section 1: "◼︎ 측정값 (Lab)" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
-Section 2: After two line breaks, "◼︎ 설명" followed by line break, then professional explanation in natural language
-
-Example personalColorDetail (Korean, adapt labels to response language):
-"◼︎ 측정값 (Lab)\n- 피부: 72.5 / 8.2 / 18.3\n- 헤어: 12.3 / 1.5 / -0.8\n- 눈: 15.2 / 3.1 / 2.0\n- 눈썹: 18.5 / 2.3 / 3.1\n- 입술: 45.2 / 22.1 / 8.5\n- 목: 70.1 / 7.8 / 16.2\n- 대비: 피부↔헤어 268, 피부↔눈 262\n\n◼︎ 설명\n고객님의 피부는 밝고 따뜻한 톤(L*72.5)으로 황색기(b*18.3)와 적색기(a*8.2)가 적절히 조화된 웜 언더톤입니다. 헤어와 눈 색상이 매우 어두워 피부와의 대비가 높은 것이 특징입니다..."
+Section 1: "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
+Section 2: After two line breaks, "\u25fc\ufe0e \uc124\uba85" followed by line break, then professional explanation in natural language
 
 IMPORTANT formatting rules:
 - Each measurement line MUST end with \\n
-- Between 측정값 section and 설명 section, use \\n\\n (double line break)
-- Color values: just numbers separated by " / " (no L*, a*, b* labels per line — the title already says Lab)
-- Apply the same structure regardless of language. Use ◼︎ as section markers.
-- For "faceShapeDetail" and "bodyTypeDetail", use plain explanation text only (no measurement section).
+- Between \uce21\uc815\uac12 section and \uc124\uba85 section, use \\n\\n (double line break)
+- Color values: just numbers separated by " / " (no L*, a*, b* labels per line)
+- Apply the same structure regardless of language. Use \u25fc\ufe0e as section markers.
+- For "faceShapeDetail" and "bodyTypeDetail", use plain explanation text only.
 
 {
   "personalColor": "Spring Light",
   "seasonGroup": "Spring",
-  "personalColorDetail": "◼︎ 측정값 (Lab)\n- 피부: 72.5 / 8.2 / 18.3\n- 헤어: 12.3 / 1.5 / -0.8\n...\n\n◼︎ 설명\n...",
+  "personalColorDetail": "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)\\n- \ud53c\ubd80: 72.5 / 8.2 / 18.3\\n...\\n\\n\u25fc\ufe0e \uc124\uba85\\n...",
   "personalColorCharacteristics": {
     "hue": "Warm",
     "value": "High",
@@ -179,9 +317,9 @@ IMPORTANT formatting rules:
     "contrast": "Low"
   },
   "faceShape": "Oval",
-  "faceShapeDetail": "Your face proportions show balanced width ratios (forehead 0.88, jaw 0.79) with a height ratio of 1.38...",
+  "faceShapeDetail": "...",
   "bodyType": "Wave",
-  "bodyTypeDetail": "Your shoulder-to-hip ratio of 0.91 indicates...",
+  "bodyTypeDetail": "...",
   "bestColors": ["Peach", "Coral", "Ivory", "Light Beige", "Soft Yellow"],
   "avoidColors": ["Black", "Cool Gray", "Neon", "Dark Brown"],
   "stylingTip": "A brief 1-2 sentence styling recommendation."
@@ -193,7 +331,7 @@ Reference the actual measured values in your explanations to show data-backed re
 
 /**
  * POST /api/demo/diagnose
- * Receive extracted face/body measurement data (JSON only, no images)
+ * Hybrid: Internal classifier + Gemini 3.1 Flash Lite description
  */
 router.post('/diagnose', async (req, res) => {
     try {
@@ -212,69 +350,57 @@ router.post('/diagnose', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Face analysis data is required.' });
         }
 
-        console.log(`Demo diagnosis from ${clientIP} (data-only, age: ${age || 'N/A'}, gender: ${gender || 'N/A'}, lang: ${lang || 'N/A'})`);
+        console.log(`Demo diagnosis from ${clientIP} (hybrid mode, age: ${age || 'N/A'}, gender: ${gender || 'N/A'}, lang: ${lang || 'N/A'})`);
 
-        // Build text prompt with measurement data
-        let prompt = DEMO_DIAGNOSIS_PROMPT;
-
-        prompt += '\n\n## Client Measurement Data (all colors in CIELAB)\n';
-
-        const labStr = (color) => {
-            if (color && color.lab) return `LAB(${color.lab.l}, ${color.lab.a}, ${color.lab.b})`;
-            return `RGB(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b})`;
+        // ──────────────────────────────────────────────
+        // STEP 1: Internal classifier (deterministic)
+        // ──────────────────────────────────────────────
+        const classifierInput = {
+            skinColor: faceAnalysis.skinColor || null,
+            hairColor: faceAnalysis.hairColor || null,
+            eyeColor: faceAnalysis.eyeColor || null,
+            contrast: faceAnalysis.contrast || null,
+            backgroundColor: faceAnalysis.backgroundColor || null,
+            neckColor: faceAnalysis.neckColor || null,
+            faceProportions: faceAnalysis.faceProportions || null,
+            bodyProportions: bodyAnalysis ? bodyAnalysis.bodyProportions : null
         };
 
-        prompt += `Skin Color: ${labStr(faceAnalysis.skinColor)}\n`;
-        prompt += `Hair Color: ${labStr(faceAnalysis.hairColor)}\n`;
-        if (faceAnalysis.eyeColor) prompt += `Eye Color: ${labStr(faceAnalysis.eyeColor)}\n`;
-        if (faceAnalysis.eyebrowColor) prompt += `Eyebrow Color: ${labStr(faceAnalysis.eyebrowColor)}\n`;
-        if (faceAnalysis.lipColor) prompt += `Lip Color: ${labStr(faceAnalysis.lipColor)}\n`;
-        if (faceAnalysis.neckColor) prompt += `Neck Color: ${labStr(faceAnalysis.neckColor)}\n`;
-        prompt += `Background: RGB(${faceAnalysis.backgroundColor.rgb.r}, ${faceAnalysis.backgroundColor.rgb.g}, ${faceAnalysis.backgroundColor.rgb.b})\n`;
-
-        prompt += `\nFace Proportions (normalized to cheekbone width = 1.0):\n`;
-        prompt += `- Forehead ratio: ${faceAnalysis.faceProportions.foreheadRatio}\n`;
-        prompt += `- Jaw ratio: ${faceAnalysis.faceProportions.jawRatio}\n`;
-        prompt += `- Height ratio: ${faceAnalysis.faceProportions.heightRatio}\n`;
-
-        if (faceAnalysis.contrast) {
-            prompt += `\nContrast (Euclidean RGB distance):\n`;
-            prompt += `- Skin \u2194 Hair: ${faceAnalysis.contrast.skinHair}\n`;
-            if (faceAnalysis.contrast.skinEye != null) {
-                prompt += `- Skin \u2194 Eye: ${faceAnalysis.contrast.skinEye}\n`;
-            }
-            if (faceAnalysis.contrast.skinLip != null) {
-                prompt += `- Skin \u2194 Lip: ${faceAnalysis.contrast.skinLip}\n`;
-            }
-            if (faceAnalysis.contrast.skinNeck != null) {
-                prompt += `- Skin \u2194 Neck: ${faceAnalysis.contrast.skinNeck}\n`;
-            }
+        // Convert background RGB to LAB if only RGB is available
+        if (classifierInput.backgroundColor && !classifierInput.backgroundColor.lab && classifierInput.backgroundColor.rgb) {
+            const { r, g, b } = classifierInput.backgroundColor.rgb;
+            classifierInput.backgroundColor = { lab: labUtils.rgbToLab(r, g, b), rgb: classifierInput.backgroundColor.rgb };
         }
 
-        if (bodyAnalysis && bodyAnalysis.bodyProportions) {
-            prompt += `\nBody Proportions:\n`;
-            prompt += `- Shoulder/Hip ratio: ${bodyAnalysis.bodyProportions.shoulderHipRatio}\n`;
+        let internalResult = null;
+        try {
+            internalResult = fullDiagnosis(classifierInput);
+            console.log(`Internal classifier: ${internalResult.personalColor.type} (confidence: ${internalResult.personalColor.confidence}), strategy: ${internalResult.strategy}`);
+        } catch (classifyError) {
+            console.warn('Internal classifier failed, falling back to Gemini-only:', classifyError.message);
+        }
+
+        // ──────────────────────────────────────────────
+        // STEP 2: Gemini 3.1 Flash Lite (description writer)
+        // ──────────────────────────────────────────────
+        let prompt;
+        const useInternalType = internalResult && internalResult.strategy !== 'gemini';
+
+        if (useInternalType) {
+            prompt = buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang);
         } else {
-            prompt += '\n\nNo body measurement data provided. Set bodyType and bodyTypeDetail to null.\n';
+            prompt = buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang);
         }
 
-        if (age) prompt += `\nCustomer age: ${age}`;
-        if (gender) prompt += `\nCustomer gender: ${gender}`;
-
-        // Language instruction
-        prompt += `\n\n${getLangInstruction(lang)}`;
-        prompt += '\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
-
-        // Call Gemini — TEXT ONLY (no image)
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
         const result = await model.generateContent(prompt);
         const rawResponse = result.response.text();
-        console.log(`Gemini response: ${rawResponse.length} chars`);
+        console.log(`Gemini response: ${rawResponse.length} chars (mode: ${useInternalType ? 'hybrid' : 'full'})`);
 
         // Parse JSON
-        let diagnosis;
+        let geminiDiagnosis;
         try {
-            diagnosis = JSON.parse(rawResponse);
+            geminiDiagnosis = JSON.parse(rawResponse);
         } catch (parseError) {
             let jsonMatch = rawResponse.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) jsonMatch = rawResponse.match(/```\s*([\s\S]*?)\s*```/);
@@ -283,7 +409,7 @@ router.post('/diagnose', async (req, res) => {
             if (jsonMatch) {
                 const jsonString = jsonMatch[1] || jsonMatch[0];
                 try {
-                    diagnosis = JSON.parse(jsonString);
+                    geminiDiagnosis = JSON.parse(jsonString);
                 } catch (e) {
                     throw new Error(`JSON parse failed: ${parseError.message}`);
                 }
@@ -292,9 +418,36 @@ router.post('/diagnose', async (req, res) => {
             }
         }
 
-        console.log(`Demo result: ${diagnosis.personalColor}, ${diagnosis.faceShape}${diagnosis.bodyType ? ', ' + diagnosis.bodyType : ''}`);
+        // ──────────────────────────────────────────────
+        // STEP 3: Merge internal + Gemini results
+        // ──────────────────────────────────────────────
+        const diagnosis = {};
 
-        // Send response first
+        if (useInternalType) {
+            diagnosis.personalColor = internalResult.personalColor.type;
+            diagnosis.seasonGroup = internalResult.personalColor.season;
+            diagnosis.personalColorCharacteristics = internalResult.personalColor.characteristics;
+            diagnosis.faceShape = internalResult.faceShape ? internalResult.faceShape.type : geminiDiagnosis.faceShape;
+            diagnosis.bodyType = internalResult.bodyType ? internalResult.bodyType.type : (geminiDiagnosis.bodyType || null);
+        } else {
+            diagnosis.personalColor = geminiDiagnosis.personalColor;
+            diagnosis.seasonGroup = geminiDiagnosis.seasonGroup;
+            diagnosis.personalColorCharacteristics = geminiDiagnosis.personalColorCharacteristics;
+            diagnosis.faceShape = geminiDiagnosis.faceShape;
+            diagnosis.bodyType = geminiDiagnosis.bodyType || null;
+        }
+
+        // Description text always from Gemini
+        diagnosis.personalColorDetail = geminiDiagnosis.personalColorDetail;
+        diagnosis.faceShapeDetail = geminiDiagnosis.faceShapeDetail;
+        diagnosis.bodyTypeDetail = geminiDiagnosis.bodyTypeDetail || null;
+        diagnosis.bestColors = geminiDiagnosis.bestColors;
+        diagnosis.avoidColors = geminiDiagnosis.avoidColors;
+        diagnosis.stylingTip = geminiDiagnosis.stylingTip;
+
+        console.log(`Demo result: ${diagnosis.personalColor}, ${diagnosis.faceShape}${diagnosis.bodyType ? ', ' + diagnosis.bodyType : ''} (${useInternalType ? 'internal' : 'gemini'})`);
+
+        // Send response
         res.json({
             success: true,
             diagnosis: {
@@ -304,13 +457,15 @@ router.post('/diagnose', async (req, res) => {
                 personalColorCharacteristics: diagnosis.personalColorCharacteristics,
                 faceShape: diagnosis.faceShape,
                 faceShapeDetail: diagnosis.faceShapeDetail,
-                bodyType: diagnosis.bodyType || null,
-                bodyTypeDetail: diagnosis.bodyTypeDetail || null,
+                bodyType: diagnosis.bodyType,
+                bodyTypeDetail: diagnosis.bodyTypeDetail,
                 bestColors: diagnosis.bestColors,
                 avoidColors: diagnosis.avoidColors,
                 stylingTip: diagnosis.stylingTip
             },
-            isDemo: true
+            isDemo: true,
+            classificationSource: useInternalType ? 'internal' : 'gemini',
+            confidence: internalResult ? internalResult.confidence.overall : null
         });
 
         // Save to MongoDB asynchronously (non-blocking)
@@ -339,12 +494,20 @@ router.post('/diagnose', async (req, res) => {
                 personalColorDetail: diagnosis.personalColorDetail,
                 faceShape: diagnosis.faceShape,
                 faceShapeDetail: diagnosis.faceShapeDetail,
-                bodyType: diagnosis.bodyType || null,
-                bodyTypeDetail: diagnosis.bodyTypeDetail || null,
+                bodyType: diagnosis.bodyType,
+                bodyTypeDetail: diagnosis.bodyTypeDetail,
                 bestColors: diagnosis.bestColors,
                 avoidColors: diagnosis.avoidColors,
                 stylingTip: diagnosis.stylingTip
             },
+            internalClassification: internalResult ? {
+                personalColor: internalResult.personalColor,
+                faceShape: internalResult.faceShape,
+                bodyType: internalResult.bodyType,
+                backgroundCorrection: internalResult.backgroundCorrection,
+                confidence: internalResult.confidence,
+                strategy: internalResult.strategy
+            } : null,
             segmentationUsed: faceAnalysis.segmentationUsed || false
         }).then(() => {
             console.log('Demo data saved to MongoDB');
@@ -368,8 +531,8 @@ router.get('/status', (req, res) => {
     res.json({
         success: true,
         available: !!genAI,
-        model: 'gemini-2.5-flash',
-        mode: 'data-only'
+        model: 'gemini-3.1-flash-lite',
+        mode: 'hybrid'
     });
 });
 

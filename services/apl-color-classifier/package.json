@@ -1,0 +1,9 @@
+{
+  "name": "apl-color-classifier",
+  "version": "1.0.0",
+  "description": "Deterministic personal color classification engine based on LAB color science",
+  "main": "index.js",
+  "keywords": ["personal-color", "lab", "color-analysis", "classification"],
+  "license": "UNLICENSED",
+  "private": true
+}
