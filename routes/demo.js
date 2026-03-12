@@ -13,6 +13,7 @@ const router = express.Router();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const DemoData = require('../models/DemoData');
 const { fullDiagnosis, labUtils } = require('../services/apl-color-classifier');
+const { classify: classifyWarmCoolModule } = require('../../../97-module-apl-color-classifier');
 
 // ─── Gemini setup ───
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -88,7 +89,7 @@ function labStr(color) {
 }
 
 // ─── Hybrid Prompt: Internal type decided, Gemini writes description only ───
-function buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang) {
+function buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang, warmCoolModule) {
     const pc = internalResult.personalColor;
     const bgCorr = internalResult.backgroundCorrection;
     const face = internalResult.faceShape;
@@ -123,6 +124,18 @@ Your job is to write professional, detailed descriptions for the diagnosis resul
     if (faceAnalysis.eyebrowColor) prompt += `Eyebrow Color: ${labStr(faceAnalysis.eyebrowColor)}\n`;
     if (faceAnalysis.lipColor) prompt += `Lip Color: ${labStr(faceAnalysis.lipColor)}\n`;
     if (faceAnalysis.neckColor) prompt += `Neck Color: ${labStr(faceAnalysis.neckColor)}\n`;
+
+    if (warmCoolModule) {
+        const wc = warmCoolModule.warmCool;
+        const ss = warmCoolModule.season;
+        prompt += `\n## Warm/Cool Tendency Analysis (LAB-based, 359 records optimized)
+- Tendency: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
+- Warm Score: ${wc.score} (0=Cool, 1=Warm)
+- Confidence: ${wc.confidence}
+- Season Scores: Spring=${ss.scores.Spring}, Summer=${ss.scores.Summer}, Autumn=${ss.scores.Autumn}, Winter=${ss.scores.Winter}
+- Season Primary: ${ss.primary} (confidence: ${ss.confidence})
+`;
+    }
 
     if (bgCorr && bgCorr.adjustments) {
         prompt += `\nBackground Correction Applied: dL=${bgCorr.adjustments.dL}, dA=${bgCorr.adjustments.dA}, dB=${bgCorr.adjustments.dB}\n`;
@@ -172,7 +185,7 @@ IMPORTANT: Respond ONLY with pure JSON. No code blocks, no markdown.
 }
 
 // ─── Full Prompt: Gemini decides everything (fallback for low confidence) ───
-function buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang) {
+function buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang, warmCoolModule) {
     let prompt = DEMO_DIAGNOSIS_PROMPT;
 
     prompt += '\n\n## Client Measurement Data (all colors in CIELAB)\n';
@@ -205,6 +218,18 @@ function buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang) {
         prompt += `- Shoulder/Hip ratio: ${bodyAnalysis.bodyProportions.shoulderHipRatio}\n`;
     } else {
         prompt += '\n\nNo body measurement data provided. Set bodyType and bodyTypeDetail to null.\n';
+    }
+
+    if (warmCoolModule) {
+        const wc = warmCoolModule.warmCool;
+        const ss = warmCoolModule.season;
+        prompt += `\n## Warm/Cool Tendency Analysis (LAB-based, 359 records optimized)
+- Tendency: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
+- Warm Score: ${wc.score} (0=Cool, 1=Warm)
+- Confidence: ${wc.confidence}
+- Season Scores: Spring=${ss.scores.Spring}, Summer=${ss.scores.Summer}, Autumn=${ss.scores.Autumn}, Winter=${ss.scores.Winter}
+- Season Primary: ${ss.primary} (confidence: ${ss.confidence})
+Use this data as a reference when determining the personal color type.\n`;
     }
 
     if (age) prompt += `\nCustomer age: ${age}`;
@@ -374,11 +399,24 @@ router.post('/diagnose', async (req, res) => {
         }
 
         let internalResult = null;
+        let warmCoolModule = null;
         try {
             internalResult = fullDiagnosis(classifierInput);
             console.log(`Internal classifier: ${internalResult.personalColor.type} (confidence: ${internalResult.personalColor.confidence}), strategy: ${internalResult.strategy}`);
         } catch (classifyError) {
             console.warn('Internal classifier failed, falling back to Gemini-only:', classifyError.message);
+        }
+
+        // 97-module: 웜/쿨 5단계 + 4계절 점수
+        const skinLab = classifierInput.skinColor ? classifierInput.skinColor.lab : null;
+        if (skinLab) {
+            try {
+                warmCoolModule = classifyWarmCoolModule(skinLab);
+                if (internalResult) internalResult.warmCoolModule = warmCoolModule;
+                console.log(`Warm/Cool module: ${warmCoolModule.warmCool.tendency} (score: ${warmCoolModule.warmCool.score}), season: ${warmCoolModule.season.primary}`);
+            } catch (wcErr) {
+                console.warn('Warm/Cool module error:', wcErr.message);
+            }
         }
 
         // ──────────────────────────────────────────────
@@ -388,9 +426,9 @@ router.post('/diagnose', async (req, res) => {
         const useInternalType = internalResult && internalResult.strategy !== 'gemini';
 
         if (useInternalType) {
-            prompt = buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang);
+            prompt = buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gender, lang, warmCoolModule);
         } else {
-            prompt = buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang);
+            prompt = buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang, warmCoolModule);
         }
 
         const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
@@ -556,6 +594,12 @@ router.post('/classify', (req, res) => {
         }
 
         const result = fullDiagnosis(classifierInput);
+
+        // 97-module: 웜/쿨 5단계 + 4계절 점수 추가
+        const skinLab = classifierInput.skinColor ? classifierInput.skinColor.lab : null;
+        if (skinLab) {
+            result.warmCoolModule = classifyWarmCoolModule(skinLab);
+        }
 
         res.json({ success: true, result });
     } catch (error) {
