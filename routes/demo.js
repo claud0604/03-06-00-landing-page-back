@@ -97,18 +97,26 @@ function buildHybridPrompt(internalResult, faceAnalysis, bodyAnalysis, age, gend
 
     let prompt = `# APL Personal Color Diagnosis — Description Writer
 
-You are a professional personal color consultant. Our internal classification engine has already determined the customer's diagnosis based on LAB color science.
+You are a professional personal color consultant. Our analysis engine has determined the customer's warm/cool tendency and season based on LAB color science.
 
-Your job is to write professional, detailed descriptions for the diagnosis results.
+Your job is to write professional, detailed descriptions based on the analysis results and measurement data.
 
-## Internal Classification Results (ALREADY DETERMINED — do NOT change these)
+IMPORTANT: Do NOT mention or determine specific personal color sub-types (e.g. Spring Light, Summer Mute, Autumn Deep, etc.). Only describe the warm/cool tendency and season results provided below.
 
-- Personal Color Type: ${pc.type}
-- Season Group: ${pc.season}
-- Characteristics: Hue=${pc.characteristics.hue}, Value=${pc.characteristics.value}, Chroma=${pc.characteristics.chroma}, Contrast=${pc.characteristics.contrast}
-- Confidence: ${pc.confidence}
-- Alternate Types: ${pc.alternates.map(a => `${a.type} (${a.confidence})`).join(', ')}
+## Analysis Results (FIXED — do NOT change these)
 `;
+
+    if (warmCoolModule) {
+        const wc = warmCoolModule.warmCool;
+        const ss = warmCoolModule.season;
+        const warmPct = Math.round(wc.score * 100);
+        const coolPct = 100 - warmPct;
+        prompt += `- Warm/Cool: ${wc.tendency}
+- Warm/Cool Score: Warm ${warmPct}% / Cool ${coolPct}%
+- Season: ${ss.primary}
+- Season Scores: Spring=${Math.round(ss.scores.Spring * 100)}%, Summer=${Math.round(ss.scores.Summer * 100)}%, Autumn=${Math.round(ss.scores.Autumn * 100)}%, Winter=${Math.round(ss.scores.Winter * 100)}%
+`;
+    }
 
     if (face) {
         prompt += `- Face Shape: ${face.type} (confidence: ${face.confidence})\n`;
@@ -124,19 +132,6 @@ Your job is to write professional, detailed descriptions for the diagnosis resul
     if (faceAnalysis.eyebrowColor) prompt += `Eyebrow Color: ${labStr(faceAnalysis.eyebrowColor)}\n`;
     if (faceAnalysis.lipColor) prompt += `Lip Color: ${labStr(faceAnalysis.lipColor)}\n`;
     if (faceAnalysis.neckColor) prompt += `Neck Color: ${labStr(faceAnalysis.neckColor)}\n`;
-
-    if (warmCoolModule) {
-        const wc = warmCoolModule.warmCool;
-        const ss = warmCoolModule.season;
-        const warmPct = Math.round(wc.score * 100);
-        const coolPct = 100 - warmPct;
-        prompt += `\n## Warm/Cool & Season Analysis (LAB-based, 359 records optimized)
-- Warm/Cool: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
-- Warm/Cool Score: Warm ${warmPct}% / Cool ${coolPct}%
-- Season: ${ss.primary} (confidence: ${ss.confidence})
-- Season Scores: Spring=${Math.round(ss.scores.Spring * 100)}%, Summer=${Math.round(ss.scores.Summer * 100)}%, Autumn=${Math.round(ss.scores.Autumn * 100)}%, Winter=${Math.round(ss.scores.Winter * 100)}%
-`;
-    }
 
     if (bgCorr && bgCorr.adjustments) {
         prompt += `\nBackground Correction Applied: dL=${bgCorr.adjustments.dL}, dA=${bgCorr.adjustments.dA}, dB=${bgCorr.adjustments.dB}\n`;
@@ -165,7 +160,8 @@ Your job is to write professional, detailed descriptions for the diagnosis resul
 
 ## Your Task
 
-Write professional descriptions for the pre-determined diagnosis. Use the measurement data to back your explanations.
+Write professional descriptions based on the analysis results and measurement data.
+IMPORTANT: Do NOT mention specific personal color sub-types (e.g. Spring Light, Summer Mute, Autumn Deep, Spring Soft, etc.). Describe only using the warm/cool tendency, warm/cool score, season, and season scores provided above, along with the LAB measurement data.
 
 The "personalColorDetail" field MUST follow this EXACT format:
 Section 1: "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
