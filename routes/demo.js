@@ -525,6 +525,44 @@ router.post('/diagnose', async (req, res) => {
 });
 
 /**
+ * POST /api/demo/classify
+ * Internal classification only (no Gemini) — lightweight, fast, for testing
+ */
+router.post('/classify', (req, res) => {
+    try {
+        const { faceAnalysis, bodyAnalysis } = req.body;
+
+        if (!faceAnalysis || !faceAnalysis.skinColor || !faceAnalysis.skinColor.lab) {
+            return res.status(400).json({ success: false, message: 'faceAnalysis.skinColor.lab is required.' });
+        }
+
+        const classifierInput = {
+            skinColor: faceAnalysis.skinColor || null,
+            hairColor: faceAnalysis.hairColor || null,
+            eyeColor: faceAnalysis.eyeColor || null,
+            contrast: faceAnalysis.contrast || null,
+            backgroundColor: faceAnalysis.backgroundColor || null,
+            neckColor: faceAnalysis.neckColor || null,
+            faceProportions: faceAnalysis.faceProportions || null,
+            bodyProportions: bodyAnalysis ? bodyAnalysis.bodyProportions : null
+        };
+
+        // Convert background RGB to LAB if needed
+        if (classifierInput.backgroundColor && !classifierInput.backgroundColor.lab && classifierInput.backgroundColor.rgb) {
+            const { r, g, b } = classifierInput.backgroundColor.rgb;
+            classifierInput.backgroundColor = { lab: labUtils.rgbToLab(r, g, b), rgb: classifierInput.backgroundColor.rgb };
+        }
+
+        const result = fullDiagnosis(classifierInput);
+
+        res.json({ success: true, result });
+    } catch (error) {
+        console.error('Classify error:', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+/**
  * GET /api/demo/status
  */
 router.get('/status', (req, res) => {
