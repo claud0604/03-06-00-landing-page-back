@@ -13,7 +13,7 @@ const router = express.Router();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const DemoData = require('../models/DemoData');
 const { fullDiagnosis, labUtils } = require('../services/apl-color-classifier');
-const { classify: classifyWarmCoolModule } = require('../../../97-module-apl-color-classifier');
+const { classify: classifyWarmCoolModule } = require('../services/warm-cool-classifier');
 
 // ─── Gemini setup ───
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
