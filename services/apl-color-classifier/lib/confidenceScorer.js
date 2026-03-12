@@ -78,10 +78,11 @@ function calculateConfidence(params) {
   // Factor 4: Data completeness
   if (measurements) {
     let fieldsPresent = 0;
-    let fieldsTotal = 5; // skin, hair, eye, contrast, background
+    let fieldsTotal = 6; // skin, hair, eye, eyebrow, contrast, background
     if (measurements.skinColor && measurements.skinColor.lab) fieldsPresent++;
     if (measurements.hairColor && measurements.hairColor.lab) fieldsPresent++;
     if (measurements.eyeColor && measurements.eyeColor.lab) fieldsPresent++;
+    if (measurements.eyebrowColor && measurements.eyebrowColor.lab) fieldsPresent++;
     if (measurements.contrast && measurements.contrast.skinHair != null) fieldsPresent++;
     if (measurements.backgroundColor && measurements.backgroundColor.lab) fieldsPresent++;
 

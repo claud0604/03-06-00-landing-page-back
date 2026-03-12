@@ -12,12 +12,22 @@
  *     skinColor: { lab: { l: 72.5, a: 8.2, b: 18.3 } },
  *     hairColor: { lab: { l: 12.3, a: 1.5, b: -0.8 } },
  *     eyeColor: { lab: { l: 15.2, a: 3.1, b: 2.0 } },
+ *     eyebrowColor: { lab: { l: 18.5, a: 2.3, b: 3.1 } },
  *     contrast: { skinHair: 268, skinEye: 262 }
  *   });
  *   // → { type: 'Spring Light', season: 'Spring', confidence: 0.82, ... }
  */
 
-const { classifyPersonalColor, determineUndertone, determineValue, determineChroma, determineContrast, mapToSeason, SEASON_MAP } = require('./lib/colorClassifier');
+const {
+  classifyPersonalColor,
+  determineSkinLightness,
+  determineSkinChroma,
+  determineElementChroma,
+  determineHueAngle,
+  COLOR_TYPES,
+  SEASON_MAP,
+  HUE_BASELINE
+} = require('./lib/colorClassifier');
 const { classifyFaceShape, FACE_REFERENCE } = require('./lib/faceClassifier');
 const { classifyBodyType, BODY_REFERENCE } = require('./lib/bodyClassifier');
 const { neutralizeBackground, detectContamination } = require('./lib/backgroundNeutralizer');
@@ -31,6 +41,7 @@ const labUtils = require('./lib/labUtils');
  * @param {Object} input.skinColor - { lab: { l, a, b } }
  * @param {Object} input.hairColor - { lab: { l, a, b } } (optional)
  * @param {Object} input.eyeColor - { lab: { l, a, b } } (optional)
+ * @param {Object} input.eyebrowColor - { lab: { l, a, b } } (optional)
  * @param {Object} input.contrast - { skinHair, skinEye } (optional)
  * @param {Object} input.backgroundColor - { lab: { l, a, b } } (optional)
  * @param {Object} input.neckColor - { lab: { l, a, b } } (optional)
@@ -43,6 +54,7 @@ function fullDiagnosis(input) {
     skinColor,
     hairColor,
     eyeColor,
+    eyebrowColor,
     contrast,
     backgroundColor,
     neckColor,
@@ -68,6 +80,7 @@ function fullDiagnosis(input) {
     skinColor: { lab: effectiveSkinLab },
     hairColor,
     eyeColor,
+    eyebrowColor,
     contrast
   };
   const colorResult = classifyPersonalColor(colorMeasurements);
@@ -123,17 +136,18 @@ module.exports = {
   determineStrategy,
 
   // Color classifier internals (for testing/debugging)
-  determineUndertone,
-  determineValue,
-  determineChroma,
-  determineContrast,
-  mapToSeason,
+  determineSkinLightness,
+  determineSkinChroma,
+  determineElementChroma,
+  determineHueAngle,
 
   // LAB utilities
   labUtils,
 
   // Reference data
+  COLOR_TYPES,
   SEASON_MAP,
+  HUE_BASELINE,
   FACE_REFERENCE,
   BODY_REFERENCE
 };

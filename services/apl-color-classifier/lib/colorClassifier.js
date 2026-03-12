@@ -1,219 +1,201 @@
 /**
- * Deterministic Personal Color Classifier
- * LAB-based 14-type classification engine
+ * Deterministic Personal Color Classifier v2
+ *
+ * Classification based on 3 axes + hue angle:
+ *   Axis 1: Skin Lightness (L*)
+ *   Axis 2: Skin Chroma — sqrt(a*^2 + b*^2)
+ *   Axis 3: Element Chroma — average sqrt(a*^2 + b*^2) of hair, eyebrows, iris
+ *   Hue: atan2(b*, a*) for warm/cool distinction
+ *
+ * 14 personal color types classified using these measurements.
+ * Paired types sharing the same 3-axis profile are distinguished
+ * by hue angle (warm vs cool undertone).
  */
 
-const referenceData = require('../data/colorReferenceData.json');
-const { labChroma } = require('./labUtils');
+const { labChroma, labHueAngle } = require('./labUtils');
 
-// Season groups and their subtypes
-const SEASON_MAP = {
-  Spring: ['Spring Light', 'Spring Bright', 'Spring Soft', 'Spring Clear'],
-  Summer: ['Summer Light', 'Summer Bright', 'Summer Mute'],
-  Autumn: ['Autumn Mute', 'Autumn Deep', 'Autumn Strong'],
-  Winter: ['Winter Clear', 'Winter Strong', 'Winter Deep', 'Winter Soft']
+// ─── 14 Personal Color Type Definitions ───
+// Each type: target ranges for [skinL, skinChroma, elemChroma] + hue tendency
+// Paired types have identical 3-axis ranges, distinguished only by hue
+const COLOR_TYPES = {
+  // Spring (Warm)
+  'Spring Light':  { skinL: [66, 76], skinC: [8, 14],  elemC: [4, 9],   hue: 'warm', pair: 'Summer Light' },
+  'Spring Bright': { skinL: [66, 76], skinC: [18, 26], elemC: [14, 25], hue: 'warm', pair: 'Summer Bright' },
+  'Spring Clear':  { skinL: [66, 76], skinC: [8, 14],  elemC: [14, 25], hue: 'warm', pair: 'Winter Clear' },
+  'Spring Soft':   { skinL: [60, 68], skinC: [12, 18], elemC: [4, 9],   hue: 'neutral', pair: null },
+
+  // Summer (Cool)
+  'Summer Light':  { skinL: [66, 76], skinC: [8, 14],  elemC: [4, 9],   hue: 'cool', pair: 'Spring Light' },
+  'Summer Bright': { skinL: [66, 76], skinC: [18, 26], elemC: [14, 25], hue: 'cool', pair: 'Spring Bright' },
+  'Summer Mute':   { skinL: [50, 58], skinC: [12, 18], elemC: [4, 9],   hue: 'cool', pair: 'Autumn Mute' },
+
+  // Autumn (Warm)
+  'Autumn Mute':   { skinL: [50, 58], skinC: [12, 18], elemC: [4, 9],   hue: 'warm', pair: 'Summer Mute' },
+  'Autumn Deep':   { skinL: [48, 54], skinC: [18, 26], elemC: [14, 25], hue: 'warm', pair: 'Winter Deep' },
+  'Autumn Strong': { skinL: [52, 58], skinC: [18, 26], elemC: [14, 25], hue: 'warm', pair: 'Winter Strong' },
+
+  // Winter (Cool)
+  'Winter Clear':  { skinL: [66, 76], skinC: [8, 14],  elemC: [14, 25], hue: 'cool', pair: 'Spring Clear' },
+  'Winter Deep':   { skinL: [48, 54], skinC: [18, 26], elemC: [14, 25], hue: 'cool', pair: 'Autumn Deep' },
+  'Winter Strong': { skinL: [52, 58], skinC: [18, 26], elemC: [14, 25], hue: 'cool', pair: 'Autumn Strong' },
+  'Winter Soft':   { skinL: [50, 58], skinC: [12, 18], elemC: [9, 14],  hue: 'neutral', pair: null }
 };
 
-/**
- * Determine warm/cool undertone from skin LAB values
- * a* > 5 AND b* > 15 → Warm
- * a* < 5 AND b* < 10 → Cool
- * Between → Neutral (lean based on weighted score)
- */
-function determineUndertone(skinLab) {
-  const { a, b } = skinLab;
+const SEASON_MAP = {
+  Spring: ['Spring Light', 'Spring Bright', 'Spring Clear', 'Spring Soft'],
+  Summer: ['Summer Light', 'Summer Bright', 'Summer Mute'],
+  Autumn: ['Autumn Mute', 'Autumn Deep', 'Autumn Strong'],
+  Winter: ['Winter Clear', 'Winter Deep', 'Winter Strong', 'Winter Soft']
+};
 
-  // Warm score: higher a* and b* = more warm
-  const warmScore = (Math.max(0, a) / 20) * 0.4 + (Math.max(0, b) / 30) * 0.6;
-  // Cool score: lower a* and b* = more cool
-  const coolScore = (Math.max(0, 10 - a) / 10) * 0.4 + (Math.max(0, 15 - b) / 15) * 0.6;
+// Hue angle baseline for warm/cool distinction
+// Human skin hue angle atan2(b*, a*) typically 50-80 degrees
+// Above baseline = warm (yellow-leaning), below = cool (pink-leaning)
+const HUE_BASELINE = 57;
 
-  if (a > 5 && b > 15) {
-    return { type: 'Warm', score: Math.min(1, warmScore), warmScore, coolScore };
-  }
-  if (a < 5 && b < 10) {
-    return { type: 'Cool', score: Math.min(1, coolScore), warmScore, coolScore };
-  }
-
-  // Neutral zone
-  if (warmScore > coolScore) {
-    return { type: 'Warm-Neutral', score: Math.min(1, warmScore), warmScore, coolScore };
-  }
-  return { type: 'Cool-Neutral', score: Math.min(1, coolScore), warmScore, coolScore };
-}
+// ─── Axis Calculators ───
 
 /**
- * Determine value (brightness) level
- * Based on skin L* primarily, with hair and eye as secondary
+ * Axis 1: Skin Lightness from L*
+ * Maps to Korean 27-level notation system
  */
-function determineValue(skinLab, hairLab, eyeLab) {
-  const skinL = skinLab.l;
+function determineSkinLightness(skinLab) {
+  const L = skinLab.l;
 
-  // Primary classification from skin lightness
-  let level, score;
-  if (skinL > 70) {
-    level = 'High';
-    score = Math.min(1, (skinL - 70) / 15);
-  } else if (skinL > 55) {
-    level = 'Middle';
-    // Distance from center of middle range (62.5)
-    score = 1 - Math.abs(skinL - 62.5) / 7.5;
+  let major, sub;
+  if (L >= 66) {
+    major = '\uace0';
+    sub = L >= 76 ? '\uace0' : L >= 71 ? '\uc911' : '\uc800';
+  } else if (L >= 50) {
+    major = '\uc911';
+    sub = L >= 60 ? '\uace0' : L >= 55 ? '\uc911' : '\uc800';
   } else {
-    level = 'Low';
-    score = Math.min(1, (55 - skinL) / 15);
+    major = '\uc800';
+    sub = L >= 46 ? '\uace0' : L >= 42 ? '\uc911' : '\uc800';
   }
 
-  return { level, score, skinL };
+  return { value: L, level: major + sub };
 }
 
 /**
- * Determine chroma (saturation) level
- * Chroma = sqrt(a*² + b*²) distance from neutral gray
+ * Axis 2: Skin Chroma = sqrt(a*^2 + b*^2)
  */
-function determineChroma(skinLab) {
-  const chromaValue = labChroma(skinLab.a, skinLab.b);
+function determineSkinChroma(skinLab) {
+  const chroma = labChroma(skinLab.a, skinLab.b);
 
-  let level, score;
-  if (chromaValue > 20) {
-    level = 'High';
-    score = Math.min(1, (chromaValue - 20) / 15);
-  } else if (chromaValue > 12) {
-    level = 'Medium';
-    score = 1 - Math.abs(chromaValue - 16) / 4;
-  } else {
-    level = 'Low';
-    score = Math.min(1, (12 - chromaValue) / 8);
-  }
+  let level;
+  if (chroma >= 26) level = '\uace0\uace0';
+  else if (chroma >= 18) level = '\uc911\uace0';
+  else if (chroma >= 14) level = '\uc911\uc911';
+  else if (chroma >= 12) level = '\uc911\uc800';
+  else if (chroma >= 8) level = '\uc800\uc911';
+  else level = '\uc800\uc800';
 
-  return { level, score, chromaValue };
+  return { value: chroma, level };
 }
 
 /**
- * Determine contrast level from RGB distances
+ * Axis 3: Element Chroma = average sqrt(a*^2 + b*^2) of hair, eyebrows, iris
  */
-function determineContrast(contrast) {
-  if (!contrast || contrast.skinHair == null) {
-    return { level: 'Middle', score: 0.5, value: 0 };
-  }
+function determineElementChroma(hairLab, eyebrowLab, eyeLab) {
+  const elements = [];
+  if (hairLab) elements.push(labChroma(hairLab.a, hairLab.b));
+  if (eyebrowLab) elements.push(labChroma(eyebrowLab.a, eyebrowLab.b));
+  if (eyeLab) elements.push(labChroma(eyeLab.a, eyeLab.b));
 
-  const val = contrast.skinHair;
+  if (elements.length === 0) return { value: 0, level: '\uc911\uc911', count: 0 };
 
-  let level, score;
-  if (val > 200) {
-    level = 'High';
-    score = Math.min(1, (val - 200) / 130);
-  } else if (val > 120) {
-    level = 'Middle';
-    score = 1 - Math.abs(val - 160) / 40;
-  } else {
-    level = 'Low';
-    score = Math.min(1, (120 - val) / 60);
-  }
+  const avg = elements.reduce((s, v) => s + v, 0) / elements.length;
 
-  return { level, score, value: val };
+  let level;
+  if (avg >= 20) level = '\uace0\uace0';
+  else if (avg >= 14) level = '\uace0\uc911';
+  else if (avg >= 9) level = '\uc911\uace0';
+  else if (avg >= 4) level = '\uc911\uc800';
+  else level = '\uc800\uc800';
+
+  return { value: avg, level, count: elements.length };
 }
 
 /**
- * Map characteristics to season group
+ * Hue angle for warm/cool determination
+ * atan2(b*, a*) in degrees. Higher = warmer (yellow). Lower = cooler (pink).
  */
-function mapToSeason(undertone, value, chroma) {
-  const isWarm = undertone.type.startsWith('Warm');
+function determineHueAngle(skinLab) {
+  const angle = labHueAngle(skinLab.a, skinLab.b);
 
-  if (isWarm) {
-    // Warm + High brightness or High chroma → Spring
-    // Warm + Low brightness or Low chroma → Autumn
-    if (value.level === 'High' || (value.level === 'Middle' && chroma.level === 'High')) {
-      return 'Spring';
-    }
-    return 'Autumn';
-  } else {
-    // Cool + High brightness or Low chroma → Summer
-    // Cool + High chroma or Low brightness → Winter
-    if (value.level === 'High' || (value.level === 'Middle' && chroma.level === 'Low')) {
-      return 'Summer';
-    }
-    return 'Winter';
-  }
+  let tendency;
+  if (angle > HUE_BASELINE + 5) tendency = 'warm';
+  else if (angle < HUE_BASELINE - 5) tendency = 'cool';
+  else tendency = 'neutral';
+
+  // Map angle to warm probability (0..1)
+  const warmScore = Math.min(1, Math.max(0, (angle - (HUE_BASELINE - 15)) / 30));
+  const coolScore = 1 - warmScore;
+
+  return { angle, tendency, warmScore, coolScore };
 }
 
-/**
- * Score how well measurements fit a specific color type
- * Returns 0-1 score (1 = perfect match)
- */
-function scoreTypeMatch(typeName, skinLab, hairLab, eyeLab, contrast) {
-  const ref = referenceData[typeName];
-  if (!ref) return 0;
-
-  let totalScore = 0;
-  let totalWeight = 0;
-
-  // Skin LAB match (weight: 5)
-  const skinScore = scoreLabRange(skinLab, ref.skinLab);
-  totalScore += skinScore * 5;
-  totalWeight += 5;
-
-  // Hair LAB match (weight: 2)
-  if (hairLab && ref.hairLab) {
-    const hairScore = scoreLabRange(hairLab, ref.hairLab);
-    totalScore += hairScore * 2;
-    totalWeight += 2;
-  }
-
-  // Eye LAB match (weight: 1)
-  if (eyeLab && ref.eyeLab) {
-    const eyeScore = scoreLabRange(eyeLab, ref.eyeLab);
-    totalScore += eyeScore * 1;
-    totalWeight += 1;
-  }
-
-  // Contrast match (weight: 2)
-  if (contrast && contrast.skinHair != null && ref.contrast && ref.contrast.skinHair) {
-    const contrastScore = scoreRange(contrast.skinHair, ref.contrast.skinHair[0], ref.contrast.skinHair[1]);
-    totalScore += contrastScore * 2;
-    totalWeight += 2;
-  }
-
-  return totalWeight > 0 ? totalScore / totalWeight : 0;
-}
+// ─── Scoring ───
 
 /**
- * Score how well a LAB value fits within a reference range
- */
-function scoreLabRange(lab, refRange) {
-  const lScore = scoreRange(lab.l, refRange.l[0], refRange.l[1]);
-  const aScore = scoreRange(lab.a, refRange.a[0], refRange.a[1]);
-  const bScore = scoreRange(lab.b, refRange.b[0], refRange.b[1]);
-
-  // L* is most important for classification
-  return lScore * 0.5 + aScore * 0.25 + bScore * 0.25;
-}
-
-/**
- * Score how well a value fits within [min, max] range
- * Returns 1.0 if within range, decreases as distance increases
+ * Score a value against a [min, max] range.
+ * 1.0 inside range, decreasing outside with graceful falloff.
  */
 function scoreRange(value, min, max) {
   if (value >= min && value <= max) return 1.0;
-
-  const range = max - min;
-  const margin = range * 0.5; // Allow 50% margin outside range
-
-  if (value < min) {
-    const distance = min - value;
-    return Math.max(0, 1 - distance / margin);
-  } else {
-    const distance = value - max;
-    return Math.max(0, 1 - distance / margin);
-  }
+  const margin = Math.max((max - min) * 0.6, 3);
+  if (value < min) return Math.max(0, 1 - (min - value) / margin);
+  return Math.max(0, 1 - (value - max) / margin);
 }
 
 /**
- * Main classification function
- * @param {Object} measurements - { skinColor: {lab}, hairColor: {lab}, eyeColor: {lab}, contrast: {skinHair, skinEye} }
- * @returns {Object} - { type, season, confidence, alternates, characteristics }
+ * Score how well measurements match a specific color type.
  */
-function classifyPersonalColor(measurements) {
-  const { skinColor, hairColor, eyeColor, contrast } = measurements;
+function scoreTypeMatch(typeName, skinL, skinChromaVal, elemChromaVal, hue) {
+  const t = COLOR_TYPES[typeName];
+  if (!t) return { score: 0, detail: {} };
+
+  const s1 = scoreRange(skinL, t.skinL[0], t.skinL[1]);
+  const s2 = scoreRange(skinChromaVal, t.skinC[0], t.skinC[1]);
+  const s3 = scoreRange(elemChromaVal, t.elemC[0], t.elemC[1]);
+
+  let hueScore, hueWeight;
+  if (t.hue === 'warm') {
+    hueScore = hue.warmScore;
+    hueWeight = t.pair ? 3 : 1;
+  } else if (t.hue === 'cool') {
+    hueScore = hue.coolScore;
+    hueWeight = t.pair ? 3 : 1;
+  } else {
+    hueScore = 0.7;
+    hueWeight = 0.5;
+  }
+
+  const w1 = 3, w2 = 2, w3 = 2;
+  const total = (s1 * w1 + s2 * w2 + s3 * w3 + hueScore * hueWeight) / (w1 + w2 + w3 + hueWeight);
+
+  return {
+    score: Math.round(total * 100) / 100,
+    detail: { skinLScore: s1, skinChromaScore: s2, elemChromaScore: s3, hueScore, hueWeight }
+  };
+}
+
+// ─── Main Classifier ───
+
+/**
+ * Classify personal color type from measurements.
+ *
+ * @param {Object} m
+ * @param {Object} m.skinColor    - { lab: { l, a, b } }  (required)
+ * @param {Object} m.hairColor    - { lab: { l, a, b } }  (optional)
+ * @param {Object} m.eyeColor     - { lab: { l, a, b } }  (optional)
+ * @param {Object} m.eyebrowColor - { lab: { l, a, b } }  (optional)
+ * @param {Object} m.contrast     - { skinHair }           (optional, for compatibility)
+ * @returns {Object} classification result
+ */
+function classifyPersonalColor(m) {
+  const { skinColor, hairColor, eyeColor, eyebrowColor, contrast } = m;
 
   if (!skinColor || !skinColor.lab) {
     throw new Error('skinColor.lab is required for classification');
@@ -222,80 +204,84 @@ function classifyPersonalColor(measurements) {
   const skinLab = skinColor.lab;
   const hairLab = hairColor ? hairColor.lab : null;
   const eyeLab = eyeColor ? eyeColor.lab : null;
+  const browLab = eyebrowColor ? eyebrowColor.lab : null;
 
-  // Step 1: Determine characteristics
-  const undertone = determineUndertone(skinLab);
-  const value = determineValue(skinLab, hairLab, eyeLab);
-  const chroma = determineChroma(skinLab);
-  const contrastLevel = determineContrast(contrast);
+  // Calculate axes
+  const axis1 = determineSkinLightness(skinLab);
+  const axis2 = determineSkinChroma(skinLab);
+  const axis3 = determineElementChroma(hairLab, browLab, eyeLab);
+  const hue = determineHueAngle(skinLab);
 
-  // Step 2: Map to season
-  const season = mapToSeason(undertone, value, chroma);
+  // Score all 14 types
+  const scores = Object.keys(COLOR_TYPES).map(name => {
+    const r = scoreTypeMatch(name, axis1.value, axis2.value, axis3.value, hue);
+    return { type: name, ...r };
+  });
+  scores.sort((a, b) => b.score - a.score);
 
-  // Step 3: Score all 14 types (not just the primary season)
-  const allScores = [];
-  for (const typeName in referenceData) {
-    const score = scoreTypeMatch(typeName, skinLab, hairLab, eyeLab, contrast);
-    allScores.push({ type: typeName, score });
+  // Primary type & season
+  const primary = scores[0];
+  let season = 'Spring';
+  for (const [s, types] of Object.entries(SEASON_MAP)) {
+    if (types.includes(primary.type)) { season = s; break; }
   }
 
-  // Sort by score descending
-  allScores.sort((a, b) => b.score - a.score);
+  // Alternates
+  const alternates = scores.slice(1, 4).map(s => ({ type: s.type, confidence: s.score }));
 
-  // Step 4: Primary type and alternates
-  const primaryType = allScores[0];
-  const alternates = allScores.slice(1, 4).map(s => ({
-    type: s.type,
-    confidence: Math.round(s.score * 100) / 100
-  }));
-
-  // Determine actual season from primary type
-  let actualSeason = season;
-  for (const [s, types] of Object.entries(SEASON_MAP)) {
-    if (types.includes(primaryType.type)) {
-      actualSeason = s;
-      break;
-    }
+  // Human-readable characteristic labels (backward-compatible)
+  const hueLabel = hue.tendency === 'warm' ? 'Warm' : hue.tendency === 'cool' ? 'Cool' : 'Neutral';
+  const valueLabel = axis1.value >= 66 ? 'High' : axis1.value >= 50 ? 'Middle' : 'Low';
+  const chromaLabel = axis2.value >= 18 ? 'High' : axis2.value >= 12 ? 'Medium' : 'Low';
+  let contrastLabel = 'Middle';
+  if (contrast && contrast.skinHair != null) {
+    contrastLabel = contrast.skinHair > 200 ? 'High' : contrast.skinHair > 120 ? 'Middle' : 'Low';
   }
 
   return {
-    type: primaryType.type,
-    season: actualSeason,
-    confidence: Math.round(primaryType.score * 100) / 100,
+    type: primary.type,
+    season,
+    confidence: primary.score,
     alternates,
     characteristics: {
-      hue: undertone.type,
-      hueScore: Math.round(undertone.score * 100) / 100,
-      value: value.level,
-      valueScore: Math.round(value.score * 100) / 100,
-      chroma: chroma.level,
-      chromaScore: Math.round(chroma.score * 100) / 100,
-      contrast: contrastLevel.level,
-      contrastScore: Math.round(contrastLevel.score * 100) / 100
+      hue: hueLabel,
+      hueScore: Math.round(hue.warmScore * 100) / 100,
+      value: valueLabel,
+      valueScore: Math.round(scoreRange(axis1.value, 60, 80) * 100) / 100,
+      chroma: chromaLabel,
+      chromaScore: Math.round(scoreRange(axis2.value, 12, 20) * 100) / 100,
+      contrast: contrastLabel,
+      contrastScore: contrast && contrast.skinHair != null
+        ? Math.round(scoreRange(contrast.skinHair, 120, 200) * 100) / 100
+        : 0.5
     },
     debug: {
-      skinL: skinLab.l,
-      skinA: skinLab.a,
-      skinB: skinLab.b,
-      chromaValue: Math.round(chroma.chromaValue * 10) / 10,
-      contrastValue: contrastLevel.value,
-      warmScore: Math.round(undertone.warmScore * 100) / 100,
-      coolScore: Math.round(undertone.coolScore * 100) / 100,
-      ruleSeason: season,
-      allScores: allScores.slice(0, 5).map(s => ({
-        type: s.type,
-        score: Math.round(s.score * 100) / 100
-      }))
+      skinL: Math.round(skinLab.l * 10) / 10,
+      skinA: Math.round(skinLab.a * 10) / 10,
+      skinB: Math.round(skinLab.b * 10) / 10,
+      skinChromaValue: Math.round(axis2.value * 10) / 10,
+      skinLightnessLevel: axis1.level,
+      skinChromaLevel: axis2.level,
+      elemChromaValue: Math.round(axis3.value * 10) / 10,
+      elemChromaLevel: axis3.level,
+      elemChromaCount: axis3.count,
+      hueAngle: Math.round(hue.angle * 10) / 10,
+      hueTendency: hue.tendency,
+      warmScore: Math.round(hue.warmScore * 100) / 100,
+      coolScore: Math.round(hue.coolScore * 100) / 100,
+      allScores: scores.slice(0, 5).map(s => ({ type: s.type, score: s.score }))
     }
   };
 }
 
 module.exports = {
   classifyPersonalColor,
-  determineUndertone,
-  determineValue,
-  determineChroma,
-  determineContrast,
-  mapToSeason,
-  SEASON_MAP
+  determineSkinLightness,
+  determineSkinChroma,
+  determineElementChroma,
+  determineHueAngle,
+  scoreRange,
+  COLOR_TYPES,
+  SEASON_MAP,
+  HUE_BASELINE
 };
