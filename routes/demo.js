@@ -21,7 +21,7 @@ let genAI = null;
 
 if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE') {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    console.log('Gemini API initialized (gemini-3.1-flash-lite)');
+    console.log('Gemini API initialized (gemini-2.5-flash-lite)');
 } else {
     console.warn('GEMINI_API_KEY not set. Demo diagnosis disabled.');
 }
@@ -128,12 +128,13 @@ Your job is to write professional, detailed descriptions for the diagnosis resul
     if (warmCoolModule) {
         const wc = warmCoolModule.warmCool;
         const ss = warmCoolModule.season;
-        prompt += `\n## Warm/Cool Tendency Analysis (LAB-based, 359 records optimized)
-- Tendency: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
-- Warm Score: ${wc.score} (0=Cool, 1=Warm)
-- Confidence: ${wc.confidence}
-- Season Scores: Spring=${ss.scores.Spring}, Summer=${ss.scores.Summer}, Autumn=${ss.scores.Autumn}, Winter=${ss.scores.Winter}
-- Season Primary: ${ss.primary} (confidence: ${ss.confidence})
+        const warmPct = Math.round(wc.score * 100);
+        const coolPct = 100 - warmPct;
+        prompt += `\n## Warm/Cool & Season Analysis (LAB-based, 359 records optimized)
+- Warm/Cool: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
+- Warm/Cool Score: Warm ${warmPct}% / Cool ${coolPct}%
+- Season: ${ss.primary} (confidence: ${ss.confidence})
+- Season Scores: Spring=${Math.round(ss.scores.Spring * 100)}%, Summer=${Math.round(ss.scores.Summer * 100)}%, Autumn=${Math.round(ss.scores.Autumn * 100)}%, Winter=${Math.round(ss.scores.Winter * 100)}%
 `;
     }
 
@@ -223,12 +224,13 @@ function buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang, warmCool
     if (warmCoolModule) {
         const wc = warmCoolModule.warmCool;
         const ss = warmCoolModule.season;
-        prompt += `\n## Warm/Cool Tendency Analysis (LAB-based, 359 records optimized)
-- Tendency: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
-- Warm Score: ${wc.score} (0=Cool, 1=Warm)
-- Confidence: ${wc.confidence}
-- Season Scores: Spring=${ss.scores.Spring}, Summer=${ss.scores.Summer}, Autumn=${ss.scores.Autumn}, Winter=${ss.scores.Winter}
-- Season Primary: ${ss.primary} (confidence: ${ss.confidence})
+        const warmPct = Math.round(wc.score * 100);
+        const coolPct = 100 - warmPct;
+        prompt += `\n## Warm/Cool & Season Analysis (LAB-based, 359 records optimized)
+- Warm/Cool: ${wc.tendency} (5-level: Warm / Neutral Warm / Neutral / Neutral Cool / Cool)
+- Warm/Cool Score: Warm ${warmPct}% / Cool ${coolPct}%
+- Season: ${ss.primary} (confidence: ${ss.confidence})
+- Season Scores: Spring=${Math.round(ss.scores.Spring * 100)}%, Summer=${Math.round(ss.scores.Summer * 100)}%, Autumn=${Math.round(ss.scores.Autumn * 100)}%, Winter=${Math.round(ss.scores.Winter * 100)}%
 Use this data as a reference when determining the personal color type.\n`;
     }
 
@@ -431,7 +433,7 @@ router.post('/diagnose', async (req, res) => {
             prompt = buildFullPrompt(faceAnalysis, bodyAnalysis, age, gender, lang, warmCoolModule);
         }
 
-        const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
         const result = await model.generateContent(prompt);
         const rawResponse = result.response.text();
         console.log(`Gemini response: ${rawResponse.length} chars (mode: ${useInternalType ? 'hybrid' : 'full'})`);
@@ -615,7 +617,7 @@ router.get('/status', (req, res) => {
     res.json({
         success: true,
         available: !!genAI,
-        model: 'gemini-3.1-flash-lite',
+        model: 'gemini-2.5-flash-lite',
         mode: 'hybrid'
     });
 });
