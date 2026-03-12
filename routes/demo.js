@@ -461,15 +461,20 @@ router.post('/diagnose', async (req, res) => {
         const diagnosis = {};
 
         if (useInternalType) {
-            diagnosis.personalColor = internalResult.personalColor.type;
-            diagnosis.seasonGroup = internalResult.personalColor.season;
-            diagnosis.personalColorCharacteristics = internalResult.personalColor.characteristics;
+            // 웜/쿨 + 시즌 (모듈 결과 사용)
+            if (warmCoolModule) {
+                diagnosis.personalColor = warmCoolModule.warmCool.tendency + ' / ' + warmCoolModule.season.primary;
+            } else {
+                diagnosis.personalColor = internalResult.personalColor.season;
+            }
             diagnosis.faceShape = internalResult.faceShape ? internalResult.faceShape.type : geminiDiagnosis.faceShape;
             diagnosis.bodyType = internalResult.bodyType ? internalResult.bodyType.type : (geminiDiagnosis.bodyType || null);
         } else {
-            diagnosis.personalColor = geminiDiagnosis.personalColor;
-            diagnosis.seasonGroup = geminiDiagnosis.seasonGroup;
-            diagnosis.personalColorCharacteristics = geminiDiagnosis.personalColorCharacteristics;
+            if (warmCoolModule) {
+                diagnosis.personalColor = warmCoolModule.warmCool.tendency + ' / ' + warmCoolModule.season.primary;
+            } else {
+                diagnosis.personalColor = geminiDiagnosis.personalColor;
+            }
             diagnosis.faceShape = geminiDiagnosis.faceShape;
             diagnosis.bodyType = geminiDiagnosis.bodyType || null;
         }
