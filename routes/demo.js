@@ -82,6 +82,16 @@ function getLangInstruction(lang) {
     }
 }
 
+function getSectionLabels(lang) {
+    const code = lang ? lang.toLowerCase().slice(0, 2) : 'en';
+    switch (code) {
+        case 'ko': return { measurements: '측정값 (Lab)', description: '설명', skin: '피부', hair: '머리카락', eyebrow: '눈썹', eye: '눈동자', lip: '입술', neck: '목' };
+        case 'ja': return { measurements: '測定値 (Lab)', description: '説明', skin: '肌', hair: '髪', eyebrow: '眉', eye: '瞳', lip: '唇', neck: '首' };
+        case 'zh': return { measurements: '测量值 (Lab)', description: '说明', skin: '皮肤', hair: '头发', eyebrow: '眉毛', eye: '瞳孔', lip: '嘴唇', neck: '脖子' };
+        default: return { measurements: 'Measurements (Lab)', description: 'Description', skin: 'Skin', hair: 'Hair', eyebrow: 'Eyebrow', eye: 'Eye', lip: 'Lip', neck: 'Neck' };
+    }
+}
+
 function labStr(color) {
     if (color && color.lab) return `LAB(${color.lab.l}, ${color.lab.a}, ${color.lab.b})`;
     if (color && color.rgb) return `RGB(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b})`;
@@ -156,6 +166,8 @@ IMPORTANT: Do NOT mention or determine specific personal color sub-types (e.g. S
     if (age) prompt += `\nAge: ${age}`;
     if (gender) prompt += `\nGender: ${gender}`;
 
+    const sl = getSectionLabels(lang);
+
     prompt += `\n\n${getLangInstruction(lang)}
 
 ## Your Task
@@ -164,13 +176,13 @@ Write professional descriptions based on the analysis results and measurement da
 IMPORTANT: Do NOT mention specific personal color sub-types (e.g. Spring Light, Summer Mute, Autumn Deep, Spring Soft, etc.). Describe only using the warm/cool tendency, warm/cool score, season, and season scores provided above, along with the LAB measurement data.
 
 The "personalColorDetail" field MUST follow this EXACT format:
-Section 1: "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
-Section 2: After two line breaks, "\u25fc\ufe0e \uc124\uba85" followed by line break, then professional explanation
+Section 1: "◼︎ ${sl.measurements}" followed by line break, then each color on its own line with L*/a*/b* values separated by " / "
+Section 2: After two line breaks, "◼︎ ${sl.description}" followed by line break, then professional explanation
 
 IMPORTANT: Respond ONLY with pure JSON. No code blocks, no markdown.
 
 {
-  "personalColorDetail": "\u25fc\ufe0e \uce21\uc815\uac12 (Lab)\\n- \ud53c\ubd80: ...\\n...\\n\\n\u25fc\ufe0e \uc124\uba85\\n...",
+  "personalColorDetail": "◼︎ ${sl.measurements}\\n- ${sl.skin}: ...\\n- ${sl.hair}: ...\\n...\\n\\n◼︎ ${sl.description}\\n...",
   "faceShapeDetail": "...",
   "bodyTypeDetail": "..." or null,
   "bestColors": ["Color1", "Color2", "Color3", "Color4", "Color5"],
@@ -233,7 +245,9 @@ Use this data as a reference when determining the personal color type.\n`;
     if (age) prompt += `\nCustomer age: ${age}`;
     if (gender) prompt += `\nCustomer gender: ${gender}`;
 
+    const sl = getSectionLabels(lang);
     prompt += `\n\n${getLangInstruction(lang)}`;
+    prompt += `\nIMPORTANT: In the "personalColorDetail" field, use "◼︎ ${sl.measurements}" for the first section header and "◼︎ ${sl.description}" for the second section header. Use "${sl.skin}", "${sl.hair}", "${sl.eyebrow}", "${sl.eye}", "${sl.lip}", "${sl.neck}" as color labels.`;
     prompt += '\nBased on the precise measurements above, provide your professional diagnosis. Respond with JSON only.';
 
     return prompt;
