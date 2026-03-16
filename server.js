@@ -8,6 +8,7 @@ const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/database');
 const demoRouter = require('./routes/demo');
+const chatRouter = require('./routes/chat');
 
 // Connect MongoDB
 connectDB();
@@ -49,6 +50,7 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/demo', demoRouter);
+app.use('/api/chat', chatRouter);
 
 // 404
 app.use((req, res) => {
